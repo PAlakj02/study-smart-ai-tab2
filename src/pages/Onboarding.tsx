@@ -29,7 +29,7 @@ const Onboarding = () => {
       setStep(step + 1);
     } else {
       // Complete onboarding
-      toast.success("Generating your personalized timetable!", {
+      toast.success("Generating your personalized study plan!", {
         description: "This will take just a moment..."
       });
       setTimeout(() => {
@@ -320,7 +320,7 @@ const Onboarding = () => {
               <div className="flex items-start gap-3">
                 <Sparkles className="h-5 w-5 text-primary flex-shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-medium mb-1">AI will create your personalized timetable</p>
+                  <p className="font-medium mb-1">AI will create your personalized study plan</p>
                   <p className="text-sm text-muted-foreground">
                     Based on your inputs, we'll generate an optimized study schedule that adapts to your needs
                   </p>
@@ -369,7 +369,7 @@ const Onboarding = () => {
               onClick={handleNext}
               className={`${step === 1 ? 'w-full' : 'flex-1'} gradient-primary text-white`}
             >
-              {step === totalSteps ? 'Generate Timetable' : 'Continue'}
+              {step === totalSteps ? 'Generate Study Plan' : 'Continue'}
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           </div>

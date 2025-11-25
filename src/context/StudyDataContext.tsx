@@ -1,5 +1,8 @@
 import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { StudyRoadmap } from '@/services/geminiService';
+import { useAuth } from './AuthContext';
+import * as firestoreService from '@/services/firestoreService';
+import { toast } from 'sonner';
 
 export type TopicStatus = 'pending' | 'in-progress' | 'completed' | 'revising';
 export type ChapterDifficulty = 'easy' | 'medium' | 'hard';
@@ -59,116 +62,30 @@ interface StudyDataContextType {
   subjects: Subject[];
   sessions: StudySession[];
   preferences: StudyPreferences;
-  streak: number;
   totalStudyHours: number;
   roadmap: StudyRoadmap | null;
-  addSubject: (subject: Omit<Subject, 'id' | 'totalTopics' | 'completedTopics' | 'progress'>) => void;
-  updateSubject: (id: string, subject: Partial<Subject>) => void;
-  deleteSubject: (id: string) => void;
-  addChapter: (subjectId: string, chapter: Omit<Chapter, 'id' | 'progress'>) => void;
-  updateChapter: (subjectId: string, chapterId: string, chapter: Partial<Chapter>) => void;
-  addTopic: (subjectId: string, chapterId: string, topic: Omit<Topic, 'id'>) => void;
-  updateTopic: (subjectId: string, chapterId: string, topicId: string, topic: Partial<Topic>) => void;
-  updateTopicStatus: (subjectId: string, chapterId: string, topicId: string, status: TopicStatus) => void;
-  addSession: (session: Omit<StudySession, 'id'>) => void;
-  completeSession: (sessionId: string) => void;
-  updatePreferences: (preferences: Partial<StudyPreferences>) => void;
-  setRoadmap: (roadmap: StudyRoadmap) => void;
+  loading: boolean;
+  addSubject: (subject: Omit<Subject, 'id' | 'totalTopics' | 'completedTopics' | 'progress'>) => Promise<void>;
+  updateSubject: (id: string, subject: Partial<Subject>) => Promise<void>;
+  deleteSubject: (id: string) => Promise<void>;
+  addChapter: (subjectId: string, chapter: Omit<Chapter, 'id' | 'progress'>) => Promise<void>;
+  updateChapter: (subjectId: string, chapterId: string, chapter: Partial<Chapter>) => Promise<void>;
+  addTopic: (subjectId: string, chapterId: string, topic: Omit<Topic, 'id'>) => Promise<void>;
+  updateTopic: (subjectId: string, chapterId: string, topicId: string, topic: Partial<Topic>) => Promise<void>;
+  updateTopicStatus: (subjectId: string, chapterId: string, topicId: string, status: TopicStatus) => Promise<void>;
+  addSession: (session: Omit<StudySession, 'id'>) => Promise<void>;
+  completeSession: (sessionId: string) => Promise<void>;
+  updatePreferences: (preferences: Partial<StudyPreferences>) => Promise<void>;
+  saveRoadmap: (roadmap: StudyRoadmap) => Promise<void>;
+  clearRoadmap: () => Promise<void>;
+  refreshData: () => Promise<void>;
 }
 
 const StudyDataContext = createContext<StudyDataContextType | undefined>(undefined);
 
-// Dummy initial data
-const INITIAL_SUBJECTS: Subject[] = [
-  {
-    id: '1',
-    name: 'Mathematics',
-    color: 'bg-blue-500',
-    examDate: '2024-12-15',
-    priority: 5,
-    chapters: [
-      {
-        id: '1-1',
-        name: 'Calculus',
-        difficulty: 'hard',
-        length: 'long',
-        progress: 65,
-        topics: [
-          { id: '1-1-1', name: 'Limits and Continuity', status: 'completed', timeAllocated: 120, timeSpent: 110, notes: 'Focus on epsilon-delta definition' },
-          { id: '1-1-2', name: 'Derivatives', status: 'in-progress', timeAllocated: 150, timeSpent: 75 },
-          { id: '1-1-3', name: 'Integration', status: 'pending', timeAllocated: 180, timeSpent: 0 },
-          { id: '1-1-4', name: 'Applications', status: 'pending', timeAllocated: 120, timeSpent: 0 }
-        ]
-      },
-      {
-        id: '1-2',
-        name: 'Algebra',
-        difficulty: 'medium',
-        length: 'medium',
-        progress: 80,
-        topics: [
-          { id: '1-2-1', name: 'Quadratic Equations', status: 'completed', timeAllocated: 90, timeSpent: 85 },
-          { id: '1-2-2', name: 'Polynomials', status: 'completed', timeAllocated: 100, timeSpent: 95 },
-          { id: '1-2-3', name: 'Complex Numbers', status: 'revising', timeAllocated: 80, timeSpent: 60 }
-        ]
-      }
-    ],
-    totalTopics: 7,
-    completedTopics: 3,
-    progress: 70
-  },
-  {
-    id: '2',
-    name: 'Physics',
-    color: 'bg-purple-500',
-    examDate: '2024-12-18',
-    priority: 4,
-    chapters: [
-      {
-        id: '2-1',
-        name: 'Mechanics',
-        difficulty: 'medium',
-        length: 'long',
-        progress: 55,
-        topics: [
-          { id: '2-1-1', name: 'Kinematics', status: 'completed', timeAllocated: 120, timeSpent: 120 },
-          { id: '2-1-2', name: 'Laws of Motion', status: 'in-progress', timeAllocated: 150, timeSpent: 80 },
-          { id: '2-1-3', name: 'Work and Energy', status: 'pending', timeAllocated: 130, timeSpent: 0 }
-        ]
-      }
-    ],
-    totalTopics: 3,
-    completedTopics: 1,
-    progress: 55
-  },
-  {
-    id: '3',
-    name: 'Chemistry',
-    color: 'bg-green-500',
-    examDate: '2024-12-20',
-    priority: 3,
-    chapters: [
-      {
-        id: '3-1',
-        name: 'Organic Chemistry',
-        difficulty: 'hard',
-        length: 'long',
-        progress: 40,
-        topics: [
-          { id: '3-1-1', name: 'Hydrocarbons', status: 'completed', timeAllocated: 140, timeSpent: 135 },
-          { id: '3-1-2', name: 'Functional Groups', status: 'in-progress', timeAllocated: 160, timeSpent: 60 },
-          { id: '3-1-3', name: 'Reactions', status: 'pending', timeAllocated: 180, timeSpent: 0 }
-        ]
-      }
-    ],
-    totalTopics: 3,
-    completedTopics: 1,
-    progress: 40
-  }
-];
-
 export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
-  const [subjects, setSubjects] = useState<Subject[]>(INITIAL_SUBJECTS);
+  const { user } = useAuth();
+  const [subjects, setSubjects] = useState<Subject[]>([]);
   const [sessions, setSessions] = useState<StudySession[]>([]);
   const [preferences, setPreferences] = useState<StudyPreferences>({
     dailyStudyHours: 6,
@@ -181,135 +98,394 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     studyStyle: 'long',
     topicOrder: 'hard-first'
   });
-  const [streak, setStreak] = useState(7);
-  const [totalStudyHours, setTotalStudyHours] = useState(142);
+  const [totalStudyHours, setTotalStudyHours] = useState(0);
   const [roadmap, setRoadmap] = useState<StudyRoadmap | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // Load roadmap from localStorage on mount
+  // Load data from Firestore when user is authenticated
   useEffect(() => {
-    const savedRoadmap = localStorage.getItem('studyRoadmap');
-    if (savedRoadmap) {
-      setRoadmap(JSON.parse(savedRoadmap));
-    }
-  }, []);
+    const loadUserData = async () => {
+      if (!user) {
+        setSubjects([]);
+        setSessions([]);
+        setRoadmap(null);
+        setTotalStudyHours(0);
+        setLoading(false);
+        return;
+      }
 
-  // Save roadmap to localStorage whenever it changes
-  useEffect(() => {
-    if (roadmap) {
-      localStorage.setItem('studyRoadmap', JSON.stringify(roadmap));
-    }
-  }, [roadmap]);
+      try {
+        setLoading(true);
 
-  const addSubject = (subject: Omit<Subject, 'id' | 'totalTopics' | 'completedTopics' | 'progress'>) => {
+        // Load subjects
+        const userSubjects = await firestoreService.getSubjects(user.id);
+        setSubjects(userSubjects);
+
+        // Load study sessions
+        const userSessions = await firestoreService.getStudySessions(user.id);
+        setSessions(userSessions);
+
+        // Load roadmap
+        const latestRoadmap = await firestoreService.getLatestRoadmap(user.id);
+        if (latestRoadmap) {
+          setRoadmap(latestRoadmap as any);
+        }
+
+        // Load preferences and total study hours
+        const userPrefs = await firestoreService.getUserPreferences(user.id);
+        if (userPrefs && userPrefs.totalStudyHours !== undefined) {
+          setTotalStudyHours(userPrefs.totalStudyHours);
+        } else {
+          // Fallback: Calculate from sessions if no saved total
+          const totalHours = userSessions.reduce((sum, s) => sum + s.duration, 0) / 60;
+          const roundedHours = Math.round(totalHours);
+          setTotalStudyHours(roundedHours);
+          
+          // Save initial value to Firestore
+          if (roundedHours > 0) {
+            await firestoreService.saveUserPreferences(user.id, { totalStudyHours: roundedHours });
+          }
+        }
+      } catch (error) {
+        console.error('Error loading user data:', error);
+        toast.error('Failed to load your data');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadUserData();
+  }, [user]);
+
+  const refreshData = async () => {
+    if (!user) return;
+    
+    try {
+      const userSubjects = await firestoreService.getSubjects(user.id);
+      setSubjects(userSubjects);
+      
+      // Also refresh total study hours
+      const userPrefs = await firestoreService.getUserPreferences(user.id);
+      if (userPrefs && userPrefs.totalStudyHours !== undefined) {
+        setTotalStudyHours(userPrefs.totalStudyHours);
+      }
+    } catch (error) {
+      console.error('Error refreshing data:', error);
+    }
+  };
+
+  const addSubject = async (subject: Omit<Subject, 'id' | 'totalTopics' | 'completedTopics' | 'progress'>) => {
+    if (!user) return;
+
     const newSubject: Subject = {
       ...subject,
-      id: Date.now().toString(),
+      id: `subject_${Date.now()}`,
+      userId: user.id,
       totalTopics: 0,
       completedTopics: 0,
+      progress: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    try {
+      await firestoreService.saveSubject(user.id, newSubject);
+      setSubjects([...subjects, newSubject]);
+      toast.success('Subject added successfully');
+    } catch (error) {
+      console.error('Error adding subject:', error);
+      toast.error('Failed to add subject');
+    }
+  };
+
+  const updateSubject = async (id: string, updatedSubject: Partial<Subject>) => {
+    if (!user) return;
+
+    try {
+      await firestoreService.updateSubject(id, updatedSubject);
+      setSubjects(subjects.map(s => s.id === id ? { ...s, ...updatedSubject } : s));
+    } catch (error) {
+      console.error('Error updating subject:', error);
+      toast.error('Failed to update subject');
+    }
+  };
+
+  const deleteSubject = async (id: string) => {
+    if (!user) return;
+
+    try {
+      await firestoreService.deleteSubject(id);
+      const updatedSubjects = subjects.filter(s => s.id !== id);
+      setSubjects(updatedSubjects);
+      
+      // If no subjects left, clear the roadmap too
+      if (updatedSubjects.length === 0 && roadmap) {
+        setRoadmap(null);
+        // Also delete from Firestore if there's a roadmap ID
+        if (roadmap.id) {
+          try {
+            await firestoreService.deleteRoadmap(roadmap.id);
+          } catch (error) {
+            console.error('Error deleting roadmap:', error);
+          }
+        }
+      }
+      
+      toast.success('Subject deleted');
+    } catch (error) {
+      console.error('Error deleting subject:', error);
+      toast.error('Failed to delete subject');
+    }
+  };
+
+  const addChapter = async (subjectId: string, chapter: Omit<Chapter, 'id' | 'progress'>) => {
+    if (!user) return;
+
+    const subject = subjects.find(s => s.id === subjectId);
+    if (!subject) return;
+
+    const newChapter: Chapter = {
+      ...chapter,
+      id: `${subjectId}-${Date.now()}`,
       progress: 0
     };
-    setSubjects([...subjects, newSubject]);
+
+    const updatedSubject = {
+      ...subject,
+      chapters: [...subject.chapters, newChapter]
+    };
+
+    try {
+      await firestoreService.updateSubject(subjectId, { chapters: updatedSubject.chapters });
+      setSubjects(subjects.map(s => s.id === subjectId ? updatedSubject : s));
+      toast.success('Chapter added');
+    } catch (error) {
+      console.error('Error adding chapter:', error);
+      toast.error('Failed to add chapter');
+    }
   };
 
-  const updateSubject = (id: string, updatedSubject: Partial<Subject>) => {
-    setSubjects(subjects.map(s => s.id === id ? { ...s, ...updatedSubject } : s));
+  const updateChapter = async (subjectId: string, chapterId: string, updatedChapter: Partial<Chapter>) => {
+    if (!user) return;
+
+    const subject = subjects.find(s => s.id === subjectId);
+    if (!subject) return;
+
+    const updatedChapters = subject.chapters.map(c => 
+      c.id === chapterId ? { ...c, ...updatedChapter } : c
+    );
+
+    try {
+      await firestoreService.updateSubject(subjectId, { chapters: updatedChapters });
+      setSubjects(subjects.map(s => s.id === subjectId ? { ...s, chapters: updatedChapters } : s));
+    } catch (error) {
+      console.error('Error updating chapter:', error);
+      toast.error('Failed to update chapter');
+    }
   };
 
-  const deleteSubject = (id: string) => {
-    setSubjects(subjects.filter(s => s.id !== id));
-  };
+  const addTopic = async (subjectId: string, chapterId: string, topic: Omit<Topic, 'id'>) => {
+    if (!user) return;
 
-  const addChapter = (subjectId: string, chapter: Omit<Chapter, 'id' | 'progress'>) => {
-    setSubjects(subjects.map(s => {
-      if (s.id === subjectId) {
-        const newChapter: Chapter = {
-          ...chapter,
-          id: `${subjectId}-${Date.now()}`,
-          progress: 0
-        };
+    const subject = subjects.find(s => s.id === subjectId);
+    if (!subject) return;
+
+    const newTopic: Topic = {
+      ...topic,
+      id: `${chapterId}-${Date.now()}`
+    };
+
+    const updatedChapters = subject.chapters.map(c => {
+      if (c.id === chapterId) {
         return {
-          ...s,
-          chapters: [...s.chapters, newChapter]
+          ...c,
+          topics: [...c.topics, newTopic]
         };
       }
-      return s;
-    }));
+      return c;
+    });
+
+    // Calculate new progress
+    const totalTopics = updatedChapters.reduce((sum, c) => sum + c.topics.length, 0);
+    const completedTopics = updatedChapters.reduce((sum, c) => 
+      sum + c.topics.filter(t => t.status === 'completed').length, 0
+    );
+    const progress = totalTopics > 0 ? Math.round((completedTopics / totalTopics) * 100) : 0;
+
+    try {
+      await firestoreService.updateSubject(subjectId, { 
+        chapters: updatedChapters, 
+        totalTopics,
+        completedTopics,
+        progress
+      });
+      setSubjects(subjects.map(s => s.id === subjectId ? { 
+        ...s, 
+        chapters: updatedChapters,
+        totalTopics,
+        completedTopics,
+        progress
+      } : s));
+      toast.success('Topic added');
+    } catch (error) {
+      console.error('Error adding topic:', error);
+      toast.error('Failed to add topic');
+    }
   };
 
-  const updateChapter = (subjectId: string, chapterId: string, updatedChapter: Partial<Chapter>) => {
-    setSubjects(subjects.map(s => {
-      if (s.id === subjectId) {
+  const updateTopic = async (subjectId: string, chapterId: string, topicId: string, updatedTopic: Partial<Topic>) => {
+    if (!user) return;
+
+    const subject = subjects.find(s => s.id === subjectId);
+    if (!subject) return;
+
+    const updatedChapters = subject.chapters.map(c => {
+      if (c.id === chapterId) {
         return {
-          ...s,
-          chapters: s.chapters.map(c => c.id === chapterId ? { ...c, ...updatedChapter } : c)
+          ...c,
+          topics: c.topics.map(t => t.id === topicId ? { ...t, ...updatedTopic } : t)
         };
       }
-      return s;
-    }));
+      return c;
+    });
+
+    // Calculate new progress
+    const totalTopics = updatedChapters.reduce((sum, c) => sum + c.topics.length, 0);
+    const completedTopics = updatedChapters.reduce((sum, c) => 
+      sum + c.topics.filter(t => t.status === 'completed').length, 0
+    );
+    const progress = totalTopics > 0 ? Math.round((completedTopics / totalTopics) * 100) : 0;
+
+    try {
+      await firestoreService.updateSubject(subjectId, { 
+        chapters: updatedChapters,
+        totalTopics,
+        completedTopics,
+        progress
+      });
+      setSubjects(subjects.map(s => s.id === subjectId ? { 
+        ...s, 
+        chapters: updatedChapters,
+        totalTopics,
+        completedTopics,
+        progress
+      } : s));
+    } catch (error) {
+      console.error('Error updating topic:', error);
+      toast.error('Failed to update topic');
+    }
   };
 
-  const addTopic = (subjectId: string, chapterId: string, topic: Omit<Topic, 'id'>) => {
-    setSubjects(subjects.map(s => {
-      if (s.id === subjectId) {
-        return {
-          ...s,
-          chapters: s.chapters.map(c => {
-            if (c.id === chapterId) {
-              const newTopic: Topic = {
-                ...topic,
-                id: `${chapterId}-${Date.now()}`
-              };
-              return {
-                ...c,
-                topics: [...c.topics, newTopic]
-              };
-            }
-            return c;
-          })
-        };
+  const updateTopicStatus = async (subjectId: string, chapterId: string, topicId: string, status: TopicStatus) => {
+    if (!user) return;
+
+    // Find the topic to get its time allocation
+    const subject = subjects.find(s => s.id === subjectId);
+    const chapter = subject?.chapters.find(c => c.id === chapterId);
+    const topic = chapter?.topics.find(t => t.id === topicId);
+    const previousStatus = topic?.status;
+
+    // Update the topic status
+    await updateTopic(subjectId, chapterId, topicId, { status });
+
+    // If topic is being marked as completed (and wasn't completed before), add time to total hours
+    if (status === 'completed' && previousStatus !== 'completed' && topic?.timeAllocated) {
+      try {
+        const timeInMinutes = topic.timeAllocated;
+        const newTotalHours = Math.round((totalStudyHours * 60 + timeInMinutes) / 60);
+        setTotalStudyHours(newTotalHours);
+        
+        // Save to Firestore
+        await firestoreService.saveUserPreferences(user.id, { totalStudyHours: newTotalHours });
+        
+        toast.success(`Great! +${timeInMinutes} minutes added to your study hours! 🎉`);
+      } catch (error) {
+        console.error('Error updating study hours:', error);
       }
-      return s;
-    }));
+    }
   };
 
-  const updateTopic = (subjectId: string, chapterId: string, topicId: string, updatedTopic: Partial<Topic>) => {
-    setSubjects(subjects.map(s => {
-      if (s.id === subjectId) {
-        return {
-          ...s,
-          chapters: s.chapters.map(c => {
-            if (c.id === chapterId) {
-              return {
-                ...c,
-                topics: c.topics.map(t => t.id === topicId ? { ...t, ...updatedTopic } : t)
-              };
-            }
-            return c;
-          })
-        };
-      }
-      return s;
-    }));
-  };
+  const addSession = async (session: Omit<StudySession, 'id'>) => {
+    if (!user) return;
 
-  const updateTopicStatus = (subjectId: string, chapterId: string, topicId: string, status: TopicStatus) => {
-    updateTopic(subjectId, chapterId, topicId, { status });
-  };
-
-  const addSession = (session: Omit<StudySession, 'id'>) => {
     const newSession: StudySession = {
       ...session,
-      id: Date.now().toString()
+      id: `session_${Date.now()}`
     };
-    setSessions([...sessions, newSession]);
+
+    try {
+      // Find subject to get its name
+      const subject = subjects.find(s => s.id === session.subjectId);
+      const subjectName = subject?.name || 'Unknown';
+      
+      await firestoreService.saveStudySession(user.id, {
+        subjectId: session.subjectId,
+        subjectName,
+        topic: '', // You can add topic tracking if needed
+        duration: session.duration,
+        date: session.date
+      });
+      
+      setSessions([...sessions, newSession]);
+      
+      // Update total study hours
+      const newTotalHours = Math.round((totalStudyHours * 60 + session.duration) / 60);
+      setTotalStudyHours(newTotalHours);
+      await firestoreService.saveUserPreferences(user.id, { totalStudyHours: newTotalHours });
+    } catch (error) {
+      console.error('Error adding session:', error);
+      toast.error('Failed to save study session');
+    }
   };
 
-  const completeSession = (sessionId: string) => {
+  const completeSession = async (sessionId: string) => {
     setSessions(sessions.map(s => s.id === sessionId ? { ...s, completed: true } : s));
   };
 
-  const updatePreferences = (newPreferences: Partial<StudyPreferences>) => {
-    setPreferences({ ...preferences, ...newPreferences });
+  const updatePreferences = async (newPreferences: Partial<StudyPreferences>) => {
+    if (!user) return;
+
+    const updatedPreferences = { ...preferences, ...newPreferences };
+    setPreferences(updatedPreferences);
+
+    try {
+      await firestoreService.saveUserPreferences(user.id, {
+        dailyGoal: newPreferences.dailyStudyHours,
+        weeklyGoal: (newPreferences.dailyStudyHours || 0) * (newPreferences.studyDays?.length || 6)
+      });
+    } catch (error) {
+      console.error('Error updating preferences:', error);
+      toast.error('Failed to save preferences');
+    }
+  };
+
+  const saveRoadmap = async (newRoadmap: StudyRoadmap) => {
+    if (!user) return;
+
+    try {
+      await firestoreService.saveRoadmap(user.id, newRoadmap as any);
+      setRoadmap(newRoadmap);
+      toast.success('Roadmap saved successfully');
+    } catch (error) {
+      console.error('Error saving roadmap:', error);
+      toast.error('Failed to save roadmap');
+      throw error;
+    }
+  };
+
+  const clearRoadmap = async () => {
+    if (!user || !roadmap) return;
+
+    try {
+      if (roadmap.id) {
+        await firestoreService.deleteRoadmap(roadmap.id);
+      }
+      setRoadmap(null);
+      toast.success('Roadmap cleared');
+    } catch (error) {
+      console.error('Error clearing roadmap:', error);
+      toast.error('Failed to clear roadmap');
+    }
   };
 
   return (
@@ -318,9 +494,9 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         subjects,
         sessions,
         preferences,
-        streak,
         totalStudyHours,
         roadmap,
+        loading,
         addSubject,
         updateSubject,
         deleteSubject,
@@ -332,7 +508,9 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         addSession,
         completeSession,
         updatePreferences,
-        setRoadmap
+        saveRoadmap,
+        clearRoadmap,
+        refreshData
       }}
     >
       {children}

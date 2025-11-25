@@ -2,22 +2,31 @@ import { useState } from 'react';
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from '@/context/AuthContext';
-import { useStudyData } from '@/context/StudyDataContext';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { ArrowLeft, User, Clock } from "lucide-react";
+import { ArrowLeft, User, Timer } from "lucide-react";
 import { toast } from 'sonner';
 
 const Settings = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { preferences, updatePreferences } = useStudyData();
   
-  const [sessionDuration, setSessionDuration] = useState(preferences.studyStyle === 'long' ? 45 : 30);
-  const [breakDuration, setBreakDuration] = useState(preferences.breakPreference === 'long' ? 15 : 10);
-  const [autoAdjust, setAutoAdjust] = useState(true);
+  // Get Pomodoro settings from localStorage
+  const savedPomodoroSettings = JSON.parse(localStorage.getItem('pomodoroSettings') || '{"sessionDuration": 45, "shortBreak": 5, "longBreak": 15}');
+  const [sessionDuration, setSessionDuration] = useState(savedPomodoroSettings.sessionDuration);
+  const [shortBreak, setShortBreak] = useState(savedPomodoroSettings.shortBreak);
+  const [longBreak, setLongBreak] = useState(savedPomodoroSettings.longBreak);
+
+  const handleSaveSettings = () => {
+    const pomodoroSettings = {
+      sessionDuration,
+      shortBreak,
+      longBreak
+    };
+    localStorage.setItem('pomodoroSettings', JSON.stringify(pomodoroSettings));
+    toast.success('Settings saved successfully!');
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -74,32 +83,11 @@ const Settings = () => {
                     className="w-full mt-1 px-3 py-2 bg-background border border-input rounded-md"
                   />
                 </div>
-                <div>
-                  <Label>Grade</Label>
-                  <select 
-                    className="w-full mt-1 px-3 py-2 bg-background border border-input rounded-md"
-                    value={user?.grade || '12'}
-                    disabled
-                  >
-                    <option value="12">Grade 12</option>
-                    <option value="11">Grade 11</option>
-                    <option value="10">Grade 10</option>
-                  </select>
-                </div>
-                <div>
-                  <Label>Board</Label>
-                  <input
-                    type="text"
-                    value={user?.board || ''}
-                    readOnly
-                    className="w-full mt-1 px-3 py-2 bg-background border border-input rounded-md"
-                  />
-                </div>
               </div>
             </Card>
           </motion.div>
 
-          {/* Study Preferences */}
+          {/* Pomodoro Timer Settings */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -108,47 +96,57 @@ const Settings = () => {
             <Card className="p-6">
               <div className="flex items-center gap-3 mb-6">
                 <div className="h-10 w-10 rounded-full gradient-primary flex items-center justify-center">
-                  <Clock className="h-5 w-5 text-white" />
+                  <Timer className="h-5 w-5 text-white" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-semibold">Study Preferences</h2>
-                  <p className="text-sm text-muted-foreground">Customize your study sessions</p>
+                  <h2 className="text-xl font-semibold">Pomodoro Timer</h2>
+                  <p className="text-sm text-muted-foreground">Customize your study session timers</p>
                 </div>
               </div>
 
               <div className="space-y-4">
                 <div>
-                  <Label>Default Session Duration</Label>
+                  <Label>Session Duration (minutes)</Label>
                   <select 
                     className="w-full mt-1 px-3 py-2 bg-background border border-input rounded-md"
                     value={sessionDuration}
                     onChange={(e) => setSessionDuration(parseInt(e.target.value))}
                   >
+                    <option value="25">25 minutes</option>
                     <option value="30">30 minutes</option>
                     <option value="45">45 minutes</option>
                     <option value="60">60 minutes</option>
                     <option value="90">90 minutes</option>
                   </select>
+                  <p className="text-xs text-muted-foreground mt-1">Focus time before break</p>
                 </div>
+                
                 <div>
-                  <Label>Break Duration</Label>
+                  <Label>Short Break (minutes)</Label>
                   <select 
                     className="w-full mt-1 px-3 py-2 bg-background border border-input rounded-md"
-                    value={breakDuration}
-                    onChange={(e) => setBreakDuration(parseInt(e.target.value))}
+                    value={shortBreak}
+                    onChange={(e) => setShortBreak(parseInt(e.target.value))}
                   >
                     <option value="5">5 minutes</option>
                     <option value="10">10 minutes</option>
                     <option value="15">15 minutes</option>
-                    <option value="20">20 minutes</option>
                   </select>
+                  <p className="text-xs text-muted-foreground mt-1">Quick refresh break</p>
                 </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label>Auto-adjust on missed sessions</Label>
-                    <p className="text-sm text-muted-foreground">Automatically reschedule</p>
-                  </div>
-                  <Switch checked={autoAdjust} onCheckedChange={setAutoAdjust} />
+                
+                <div>
+                  <Label>Long Break (minutes)</Label>
+                  <select 
+                    className="w-full mt-1 px-3 py-2 bg-background border border-input rounded-md"
+                    value={longBreak}
+                    onChange={(e) => setLongBreak(parseInt(e.target.value))}
+                  >
+                    <option value="15">15 minutes</option>
+                    <option value="20">20 minutes</option>
+                    <option value="30">30 minutes</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground mt-1">Extended break after multiple sessions</p>
                 </div>
               </div>
             </Card>
@@ -158,13 +156,7 @@ const Settings = () => {
           <div className="flex gap-4">
             <Button 
               className="flex-1 gradient-primary text-white"
-              onClick={() => {
-                updatePreferences({
-                  studyStyle: sessionDuration >= 45 ? 'long' : 'short',
-                  breakPreference: breakDuration >= 15 ? 'long' : 'short'
-                });
-                toast.success('Settings saved successfully!');
-              }}
+              onClick={handleSaveSettings}
             >
               Save Changes
             </Button>

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { useStudyData } from '@/context/StudyDataContext';
 import { generateStudyRoadmap, RoadmapInput } from '@/services/geminiService';
@@ -8,13 +8,13 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { ArrowLeft, Sparkles, Loader2, Zap, Target, Calendar, Clock, Save, CheckCircle, FolderPlus } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { ArrowLeft, Sparkles, Loader2, Zap, Target, Calendar, Clock, Save, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 const RoadmapGenerator = () => {
   const navigate = useNavigate();
-  const { setRoadmap, subjects, addSubject, addChapter } = useStudyData();
+  const { saveRoadmap, subjects, addSubject } = useStudyData();
   const [isGenerating, setIsGenerating] = useState(false);
   
   const [formData, setFormData] = useState<RoadmapInput>({
@@ -23,8 +23,7 @@ const RoadmapGenerator = () => {
     currentLevel: 'intermediate',
     studyHoursPerDay: 6,
     weakAreas: [],
-    goals: '',
-    preferredStudyStyle: 'mixed'
+    goals: ''
   });
 
   const [customSubject, setCustomSubject] = useState('');
@@ -65,7 +64,7 @@ const RoadmapGenerator = () => {
   };
 
   const [generatedRoadmap, setGeneratedRoadmap] = useState<any>(null);
-  const [showSaveOptions, setShowSaveOptions] = useState(false);
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
 
   const handleGenerate = async () => {
     if (!formData.examDate) {
@@ -87,10 +86,10 @@ const RoadmapGenerator = () => {
 
       const roadmap = await generateStudyRoadmap(formData);
       setGeneratedRoadmap(roadmap);
-      setShowSaveOptions(true);
+      setShowSaveDialog(true);
 
       toast.success('Roadmap generated successfully! 🎉', {
-        description: 'Review and save to your subjects'
+        description: 'Review your personalized study plan'
       });
     } catch (error) {
       console.error('Error generating roadmap:', error);
@@ -102,72 +101,57 @@ const RoadmapGenerator = () => {
     }
   };
 
-  const handleSaveToDashboard = () => {
-    setRoadmap(generatedRoadmap);
-    toast.success('Saved to Dashboard!');
-    setTimeout(() => navigate('/dashboard'), 1000);
-  };
-
-  const handleSaveToSubjects = () => {
+  const handleSaveRoadmap = async () => {
     if (!generatedRoadmap) return;
 
-    // For each subject in the roadmap, create subjects with chapters from weekly plans
-    formData.subjects.forEach((subjectName, index) => {
-      const subjectWeeks = generatedRoadmap.weeklyPlans.filter((week: any) => 
-        week.focus.toLowerCase().includes(subjectName.toLowerCase())
-      );
+    try {
+      setShowSaveDialog(false);
+      toast.info('Saving your roadmap...');
 
-      if (subjectWeeks.length > 0) {
-        // Create the subject
-        const newSubject = {
-          name: subjectName,
-          color: ['bg-blue-500', 'bg-purple-500', 'bg-green-500', 'bg-orange-500', 'bg-pink-500'][index % 5],
-          examDate: formData.examDate,
-          priority: 5,
-          chapters: []
-        };
+      // Save roadmap to dashboard
+      await saveRoadmap(generatedRoadmap);
 
-        addSubject(newSubject);
-        
-        // Get the newly created subject ID (last one)
-        setTimeout(() => {
-          const allSubjects = subjects.filter(s => s.name === subjectName);
-          if (allSubjects.length > 0) {
-            const currentSubject = allSubjects[allSubjects.length - 1];
-            
-            // Group weeks into chapters
-            subjectWeeks.forEach((week: any, weekIndex: number) => {
-              const chapterName = `Week ${week.week}: ${week.focus.split(' - ')[0]}`;
-              
-              addChapter(currentSubject.id, {
-                name: chapterName,
-                difficulty: weekIndex < subjectWeeks.length / 3 ? 'easy' : weekIndex < 2 * subjectWeeks.length / 3 ? 'medium' : 'hard',
-                length: 'medium',
-                topics: week.topics.map((topic: string) => ({
-                  name: topic,
-                  status: 'pending' as const,
-                  timeAllocated: Math.floor(week.studyHours / week.topics.length * 60),
-                  timeSpent: 0
-                }))
-              });
-            });
-          }
-        }, 100);
+      // Create subjects from the roadmap
+      for (const [index, subjectName] of formData.subjects.entries()) {
+        const subjectWeeks = generatedRoadmap.weeklyPlans.filter((week: any) => 
+          week.focus.toLowerCase().includes(subjectName.toLowerCase())
+        );
+
+        if (subjectWeeks.length > 0) {
+          const newSubject = {
+            name: subjectName,
+            color: ['bg-blue-500', 'bg-purple-500', 'bg-green-500', 'bg-orange-500', 'bg-pink-500'][index % 5],
+            examDate: formData.examDate,
+            priority: 5,
+            chapters: subjectWeeks.map((week: any, weekIndex: number) => ({
+              id: `chapter_${Date.now()}_${weekIndex}`,
+              name: `Week ${week.week}: ${week.focus.split(' - ')[0]}`,
+              difficulty: weekIndex < subjectWeeks.length / 3 ? 'easy' as const : weekIndex < 2 * subjectWeeks.length / 3 ? 'medium' as const : 'hard' as const,
+              length: 'medium' as const,
+              progress: 0,
+              topics: week.topics.map((topic: string, topicIndex: number) => ({
+                id: `topic_${Date.now()}_${weekIndex}_${topicIndex}`,
+                name: topic,
+                status: 'pending' as const,
+                timeAllocated: Math.floor((week.studyHours || formData.studyHoursPerDay) / week.topics.length * 60),
+                timeSpent: 0
+              }))
+            }))
+          };
+
+          await addSubject(newSubject);
+        }
       }
-    });
 
-    // Also save to dashboard
-    setRoadmap(generatedRoadmap);
-    
-    toast.success('Roadmap saved to My Subjects! 🎉', {
-      description: 'You can now track your progress'
-    });
+      toast.success('Roadmap saved successfully! 🎉', {
+        description: 'Check your subjects and dashboard'
+      });
 
-    setTimeout(() => navigate('/subjects'), 1500);
-  };
-
-  const handleSaveBoth = () => {
-    handleSaveToSubjects();
+      setTimeout(() => navigate('/dashboard'), 1500);
+    } catch (error) {
+      console.error('Error saving roadmap:', error);
+      toast.error('Failed to save roadmap');
+    }
   };
 
   return (
@@ -329,21 +313,6 @@ const RoadmapGenerator = () => {
                 </div>
               </div>
 
-              {/* Study Style */}
-              <div>
-                <Label className="text-lg font-semibold mb-3 block">📖 Preferred Study Style</Label>
-                <select
-                  className="w-full px-3 py-2 bg-background border border-input rounded-md"
-                  value={formData.preferredStudyStyle}
-                  onChange={(e) => setFormData({ ...formData, preferredStudyStyle: e.target.value })}
-                >
-                  <option value="visual">Visual - Videos, diagrams, charts</option>
-                  <option value="reading">Reading - Books, notes, articles</option>
-                  <option value="practical">Practical - Problem-solving, exercises</option>
-                  <option value="mixed">Mixed - Combination of all</option>
-                </select>
-              </div>
-
               {/* Goals */}
               <div>
                 <Label className="text-lg font-semibold mb-3 block">🎯 Your Goals (Optional)</Label>
@@ -402,59 +371,70 @@ const RoadmapGenerator = () => {
           </div>
         </motion.div>
 
-        {/* Save Options Dialog */}
-        <Dialog open={showSaveOptions} onOpenChange={setShowSaveOptions}>
-          <DialogContent className="max-w-md">
+        {/* Save Dialog */}
+        <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
+          <DialogContent className="max-w-lg">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <CheckCircle className="h-6 w-6 text-success" />
+              <DialogTitle className="flex items-center gap-2 text-xl">
+                <Sparkles className="h-6 w-6 text-primary" />
                 Roadmap Generated Successfully!
               </DialogTitle>
               <DialogDescription>
-                Choose how you want to save your personalized study roadmap
+                Your personalized study roadmap is ready. Would you like to save it?
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-3 py-4">
-              <Button 
-                onClick={handleSaveToDashboard}
-                variant="outline"
-                className="w-full h-auto p-4 justify-start"
-              >
-                <div className="flex items-start gap-3 text-left">
-                  <Save className="h-5 w-5 mt-1 text-primary flex-shrink-0" />
-                  <div>
-                    <div className="font-semibold mb-1">Save to Dashboard Only</div>
-                    <div className="text-sm text-muted-foreground">
-                      View your roadmap on dashboard. Manual topic management.
+            {generatedRoadmap && (
+              <div className="py-4 space-y-4">
+                <div className="p-4 bg-primary/5 rounded-lg border border-primary/20">
+                  <h3 className="font-semibold mb-2">{generatedRoadmap.title}</h3>
+                  <p className="text-sm text-muted-foreground mb-3">{generatedRoadmap.description}</p>
+                  <div className="grid grid-cols-3 gap-3 text-center">
+                    <div>
+                      <div className="text-2xl font-bold text-primary">{generatedRoadmap.totalWeeks}</div>
+                      <div className="text-xs text-muted-foreground">Weeks</div>
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold text-success">{formData.subjects.length}</div>
+                      <div className="text-xs text-muted-foreground">Subjects</div>
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold text-warning">{generatedRoadmap.weeklyPlans.reduce((sum: number, w: any) => sum + w.topics.length, 0)}</div>
+                      <div className="text-xs text-muted-foreground">Topics</div>
                     </div>
                   </div>
                 </div>
-              </Button>
 
-              <Button 
-                onClick={handleSaveToSubjects}
-                className="w-full h-auto p-4 justify-start gradient-primary text-white"
-              >
-                <div className="flex items-start gap-3 text-left">
-                  <FolderPlus className="h-5 w-5 mt-1 flex-shrink-0" />
-                  <div>
-                    <div className="font-semibold mb-1">Save to My Subjects (Recommended)</div>
-                    <div className="text-sm opacity-90">
-                      Automatically create subjects with all topics. Track completion easily!
-                    </div>
-                  </div>
+                <div className="p-3 bg-success/5 rounded-lg border border-success/20">
+                  <p className="text-sm">
+                    <strong>✓ Saved to Dashboard:</strong> View your roadmap anytime
+                  </p>
+                  <p className="text-sm mt-1">
+                    <strong>✓ Added to My Subjects:</strong> Track progress with checkboxes for each topic
+                  </p>
                 </div>
-              </Button>
-
-              <div className="pt-4 border-t">
-                <p className="text-xs text-muted-foreground text-center">
-                  💡 Saving to My Subjects creates organized chapters and topics you can check off as you complete them
-                </p>
               </div>
-            </div>
+            )}
+
+            <DialogFooter className="gap-2">
+              <Button 
+                variant="outline" 
+                onClick={() => setShowSaveDialog(false)}
+              >
+                <X className="h-4 w-4 mr-2" />
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleSaveRoadmap}
+                className="gradient-primary text-white"
+              >
+                <Save className="h-4 w-4 mr-2" />
+                Save Roadmap
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
+
       </main>
     </div>
   );

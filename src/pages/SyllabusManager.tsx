@@ -14,7 +14,7 @@ import { toast } from 'sonner';
 
 const SyllabusManager = () => {
   const navigate = useNavigate();
-  const { subjects, addSubject, addChapter, addTopic, updateTopicStatus, deleteSubject } = useStudyData();
+  const { subjects, addSubject, addChapter, addTopic, updateTopicStatus, deleteSubject, loading } = useStudyData();
   const [expandedSubjects, setExpandedSubjects] = useState<Set<string>>(new Set());
   const [expandedChapters, setExpandedChapters] = useState<Set<string>>(new Set());
   const [newSubjectDialog, setNewSubjectDialog] = useState(false);
@@ -235,7 +235,12 @@ const SyllabusManager = () => {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
-        {subjects.length === 0 ? (
+        {loading ? (
+          <Card className="p-12 text-center">
+            <div className="h-16 w-16 mx-auto mb-4 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+            <h3 className="text-xl font-semibold mb-2">Loading your subjects...</h3>
+          </Card>
+        ) : subjects.length === 0 ? (
           <Card className="p-12 text-center">
             <BookOpen className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
             <h3 className="text-xl font-semibold mb-2">No Subjects Yet</h3>
@@ -479,9 +484,14 @@ const SyllabusManager = () => {
                                                 {topic.name}
                                               </p>
                                               <div className="flex items-center gap-3 mt-1">
-                                                <p className="text-xs text-muted-foreground">
-                                                  ⏱ {topic.timeSpent}/{topic.timeAllocated} min
+                                                <p className="text-xs font-medium text-primary">
+                                                  ⏱ {topic.timeAllocated} min
                                                 </p>
+                                                {topic.status === 'completed' && (
+                                                  <span className="text-xs text-success font-medium">
+                                                    ✓ Added to study hours
+                                                  </span>
+                                                )}
                                                 <span className={`text-xs px-2 py-0.5 rounded-full border ${getStatusBadgeClass(topic.status)}`}>
                                                   {getStatusLabel(topic.status)}
                                                 </span>

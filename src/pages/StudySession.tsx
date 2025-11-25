@@ -1,21 +1,27 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
+import { useStudyData } from "@/context/StudyDataContext";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Pause, Play, SkipForward, CheckCircle, FileText, Music } from "lucide-react";
+import { ArrowLeft, Pause, Play, SkipForward, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
 
 const StudySession = () => {
   const navigate = useNavigate();
+  const { addSession, totalStudyHours, subjects } = useStudyData();
+  
+  // Get Pomodoro settings from localStorage
+  const pomodoroSettings = JSON.parse(localStorage.getItem('pomodoroSettings') || '{"sessionDuration": 45, "shortBreak": 5, "longBreak": 15}');
+  const sessionDurationMinutes = pomodoroSettings.sessionDuration;
+  
   const [isRunning, setIsRunning] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(45 * 60); // 45 minutes in seconds
-  const [notes, setNotes] = useState("");
-  const [musicEnabled, setMusicEnabled] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(sessionDurationMinutes * 60); // Convert minutes to seconds
   const [isComplete, setIsComplete] = useState(false);
+  const [timeStudied, setTimeStudied] = useState(0); // Track actual time studied in minutes
+  const [sessionsCompleted, setSessionsCompleted] = useState(0);
 
-  const totalTime = 45 * 60;
+  const totalTime = sessionDurationMinutes * 60;
   const progress = ((totalTime - timeLeft) / totalTime) * 100;
 
   useEffect(() => {
@@ -41,10 +47,29 @@ const StudySession = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const handleComplete = () => {
+  const handleComplete = async () => {
+    // Calculate time studied (time that was used)
+    const studiedMinutes = Math.round((totalTime - timeLeft) / 60);
+    setTimeStudied(studiedMinutes);
+    setSessionsCompleted(sessionsCompleted + 1);
+    
+    // Save session to database (only if time was actually studied)
+    if (studiedMinutes > 0 && subjects.length > 0) {
+      try {
+        await addSession({
+          subjectId: subjects[0].id, // Default to first subject for now
+          duration: studiedMinutes,
+          date: new Date().toISOString(),
+          completed: true
+        });
+      } catch (error) {
+        console.error('Error saving session:', error);
+      }
+    }
+    
     setIsComplete(true);
-    toast.success("Session Complete! 🎉", {
-      description: "Great work! You've completed this study session."
+    toast.success("Pomodoro Complete! 🎉", {
+      description: `Great focus! You completed ${studiedMinutes} minutes of study time.`
     });
   };
 
@@ -66,24 +91,21 @@ const StudySession = () => {
               <CheckCircle className="h-10 w-10 text-white" />
             </motion.div>
             
-            <h2 className="text-3xl font-bold mb-2">Session Complete!</h2>
-            <p className="text-muted-foreground mb-6">Great work on completing your study session</p>
+            <h2 className="text-3xl font-bold mb-2">Pomodoro Complete!</h2>
+            <p className="text-muted-foreground mb-6">Excellent focus! Take a well-deserved break.</p>
             
             <div className="space-y-3 mb-8">
               <div className="flex justify-between p-3 bg-surface rounded-lg">
-                <span className="text-muted-foreground">Time Studied</span>
-                <span className="font-semibold">45 min</span>
+                <span className="text-muted-foreground">Time Focused</span>
+                <span className="font-semibold">{timeStudied} min</span>
               </div>
               <div className="flex justify-between p-3 bg-surface rounded-lg">
-                <span className="text-muted-foreground">Progress</span>
-                <span className="font-semibold text-success">+12%</span>
+                <span className="text-muted-foreground">Pomodoros Today</span>
+                <span className="font-semibold text-primary">{sessionsCompleted} 🍅</span>
               </div>
               <div className="flex justify-between p-3 bg-surface rounded-lg">
-                <span className="text-muted-foreground">Streak</span>
-                <span className="font-semibold flex items-center gap-1">
-                  <span>7 days</span>
-                  <span>🔥</span>
-                </span>
+                <span className="text-muted-foreground">Total Study Hours</span>
+                <span className="font-semibold text-success">{totalStudyHours}h</span>
               </div>
             </div>
 
@@ -99,10 +121,12 @@ const StudySession = () => {
                 className="w-full"
                 onClick={() => {
                   setIsComplete(false);
-                  setTimeLeft(45 * 60);
+                  setTimeLeft(sessionDurationMinutes * 60);
+                  setTimeStudied(0);
+                  setIsRunning(false);
                 }}
               >
-                Start Next Session
+                Start Next Pomodoro
               </Button>
             </div>
           </Card>
@@ -131,8 +155,8 @@ const StudySession = () => {
               <ArrowLeft className="h-5 w-5" />
             </Button>
             <div className="text-center">
-              <h1 className="text-lg font-semibold">Study Session</h1>
-              <p className="text-sm text-muted-foreground">Mathematics - Calculus</p>
+              <h1 className="text-lg font-semibold">Pomodoro Timer</h1>
+              <p className="text-sm text-muted-foreground">Focus on your study session</p>
             </div>
             <div className="w-10" />
           </div>
@@ -152,7 +176,12 @@ const StudySession = () => {
               <div className="absolute inset-0 gradient-primary opacity-5" />
               
               <div className="relative z-10">
-                <h3 className="text-xl font-semibold mb-2 text-muted-foreground">Derivatives</h3>
+                {/* Session Type Badge */}
+                <div className="flex justify-center items-center gap-3 mb-4">
+                  <div className="px-4 py-2 rounded-full bg-primary/10 text-primary font-semibold">
+                    Focus Session 🍅
+                  </div>
+                </div>
                 
                 {/* Circular Progress */}
                 <div className="relative w-64 h-64 mx-auto my-8">
@@ -209,13 +238,13 @@ const StudySession = () => {
                     size="lg"
                     variant="outline"
                     onClick={() => {
-                      toast.info("Session skipped");
+                      toast.info("Pomodoro session ended");
                       navigate('/dashboard');
                     }}
                     className="h-14 px-6 rounded-full"
                   >
                     <SkipForward className="h-5 w-5 mr-2" />
-                    Skip
+                    End
                   </Button>
                   <Button
                     size="lg"
@@ -226,41 +255,10 @@ const StudySession = () => {
                     Complete
                   </Button>
                 </div>
-
-                {/* Music Toggle */}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setMusicEnabled(!musicEnabled)}
-                  className={musicEnabled ? "text-primary" : ""}
-                >
-                  <Music className="h-4 w-4 mr-2" />
-                  Focus Music: {musicEnabled ? "On" : "Off"}
-                </Button>
               </div>
             </Card>
           </motion.div>
 
-          {/* Quick Notes */}
-          <motion.div
-            initial={{ y: 20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            transition={{ delay: 0.2 }}
-          >
-            <Card className="p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <FileText className="h-5 w-5 text-primary" />
-                <h3 className="font-semibold">Quick Notes</h3>
-              </div>
-              <Textarea
-                placeholder="Jot down important points, formulas, or thoughts..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                className="min-h-[120px] resize-none"
-              />
-              <p className="text-xs text-muted-foreground mt-2">Auto-saved</p>
-            </Card>
-          </motion.div>
         </div>
       </div>
     </div>

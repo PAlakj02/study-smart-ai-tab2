@@ -7,41 +7,65 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { BookOpen, Mail, Lock, AlertCircle, Eye, EyeOff } from 'lucide-react';
+import { BookOpen, Mail, Lock, AlertCircle, Eye, EyeOff, User } from 'lucide-react';
 import { toast } from 'sonner';
 
-const Login = () => {
+const Signup = () => {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { signup } = useAuth();
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+
+    // Validation
+    if (!name.trim()) {
+      setError('Please enter your name');
+      return;
+    }
+
+    if (!email.trim()) {
+      setError('Please enter your email');
+      return;
+    }
+
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      const success = await login(email, password);
+      const success = await signup(email, password, name);
       
       if (success) {
-        toast.success('Welcome back!', {
-          description: 'Successfully logged in to your account.'
+        toast.success('Account created successfully!', {
+          description: 'Welcome to StudySync!'
         });
         navigate('/dashboard');
       } else {
-        setError('Invalid email or password. Please try again.');
+        setError('Failed to create account. Email may already be in use.');
       }
-    } catch (err) {
-      setError('An error occurred. Please try again.');
+    } catch (err: any) {
+      setError(err.message || 'An error occurred. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
-
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden flex items-center justify-center p-4">
@@ -68,14 +92,14 @@ const Login = () => {
               <BookOpen className="h-8 w-8 text-white" />
             </motion.div>
             <h1 className="text-4xl font-bold mb-2">
-              Welcome to <span className="text-gradient">StudySync</span>
+              Create Your Account
             </h1>
             <p className="text-muted-foreground">
-              Your AI-powered study companion
+              Start your study journey with StudySync
             </p>
           </div>
 
-          {/* Login Card */}
+          {/* Signup Card */}
           <Card className="p-8 shadow-xl">
             <form onSubmit={handleSubmit} className="space-y-6">
               {error && (
@@ -86,13 +110,29 @@ const Login = () => {
               )}
 
               <div className="space-y-2">
+                <Label htmlFor="name">Full Name</Label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                  <Input
+                    id="name"
+                    type="text"
+                    placeholder="John Doe"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="pl-10"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
                   <Input
                     id="email"
                     type="email"
-                    placeholder="student@demo.com"
+                    placeholder="you@example.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="pl-10"
@@ -126,6 +166,34 @@ const Login = () => {
                     )}
                   </button>
                 </div>
+                <p className="text-xs text-muted-foreground">At least 6 characters</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="confirmPassword">Confirm Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                  <Input
+                    id="confirmPassword"
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    placeholder="••••••••"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="pl-10 pr-10"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showConfirmPassword ? (
+                      <EyeOff className="h-5 w-5" />
+                    ) : (
+                      <Eye className="h-5 w-5" />
+                    )}
+                  </button>
+                </div>
               </div>
 
               <Button
@@ -133,16 +201,16 @@ const Login = () => {
                 className="w-full gradient-primary text-white"
                 disabled={isLoading}
               >
-                {isLoading ? 'Signing in...' : 'Sign In'}
+                {isLoading ? 'Creating Account...' : 'Create Account'}
               </Button>
 
               <div className="text-center">
                 <button
                   type="button"
-                  onClick={() => navigate('/signup')}
+                  onClick={() => navigate('/login')}
                   className="text-sm text-primary hover:underline"
                 >
-                  Don't have an account? Sign up
+                  Already have an account? Sign in
                 </button>
               </div>
             </form>
@@ -153,5 +221,5 @@ const Login = () => {
   );
 };
 
-export default Login;
+export default Signup;
 

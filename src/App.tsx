@@ -8,7 +8,7 @@ import { AuthProvider, useAuth } from "./context/AuthContext";
 import { StudyDataProvider } from "./context/StudyDataContext";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
-import Onboarding from "./pages/Onboarding";
+import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import StudySession from "./pages/StudySession";
 import Settings from "./pages/Settings";
@@ -21,7 +21,19 @@ const queryClient = new QueryClient();
 
 // Protected Route Component
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, loading } = useAuth();
+  
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="h-16 w-16 mx-auto mb-4 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+  
   return isAuthenticated ? <>{children}</> : <Navigate to="/login" />;
 };
 
@@ -29,8 +41,8 @@ const AppRoutes = () => {
   return (
     <Routes>
       <Route path="/" element={<Index />} />
-      <Route path="/login" element={<Login />} />
-      <Route path="/onboarding" element={<Onboarding />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
       <Route
         path="/dashboard"
         element={

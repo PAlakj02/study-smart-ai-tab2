@@ -1,3 +1,4 @@
+import React from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
@@ -8,11 +9,9 @@ import { Progress } from "@/components/ui/progress";
 import {
   Calendar,
   Clock,
-  Flame,
   BookOpen,
   TrendingUp,
   Settings,
-  Bell,
   User,
   Target,
   Play,
@@ -21,20 +20,79 @@ import {
   BarChart3,
   BookMarked,
   Sparkles,
-  ChevronRight
+  Timer
 } from "lucide-react";
 
 const Dashboard = () => {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
-  const { subjects, streak, totalStudyHours, roadmap } = useStudyData();
+  const { subjects, totalStudyHours, roadmap, loading } = useStudyData();
 
-  // Sample today's sessions
-  const todaySessions = [
-    { id: 1, subject: 'Mathematics', topic: 'Calculus - Derivatives', time: '9:00 AM', duration: 60, status: 'completed', color: 'bg-blue-500' },
-    { id: 2, subject: 'Physics', topic: 'Mechanics - Motion', time: '10:30 AM', duration: 45, status: 'current', color: 'bg-purple-500' },
-    { id: 3, subject: 'Chemistry', topic: 'Organic Chemistry', time: '2:00 PM', duration: 60, status: 'upcoming', color: 'bg-green-500' },
-  ];
+  // Generate today's study schedule from subjects and roadmap
+  const todaySessions = React.useMemo(() => {
+    const sessions: any[] = [];
+    
+    // If roadmap exists, use current week's topics
+    if (roadmap && roadmap.weeklyPlans) {
+      const currentWeekIndex = Math.min(
+        Math.floor((new Date().getTime() - new Date(roadmap.createdAt).getTime()) / (7 * 24 * 60 * 60 * 1000)),
+        roadmap.weeklyPlans.length - 1
+      );
+      
+      const currentWeek = roadmap.weeklyPlans[currentWeekIndex];
+      
+      if (currentWeek && currentWeek.topics) {
+        const times = ['9:00 AM', '11:00 AM', '2:00 PM', '4:00 PM'];
+        currentWeek.topics.slice(0, 4).forEach((topic: string, index: number) => {
+          const subject = subjects.find(s => 
+            currentWeek.focus.toLowerCase().includes(s.name.toLowerCase())
+          ) || subjects[0];
+          
+          sessions.push({
+            id: index + 1,
+            subject: subject?.name || 'Study',
+            topic: topic,
+            time: times[index],
+            duration: 60,
+            status: index === 0 ? 'current' : index < 2 ? 'upcoming' : 'pending',
+            color: subject?.color || 'bg-primary'
+          });
+        });
+      }
+    }
+    
+    // If no roadmap, create sessions from subjects with pending topics
+    if (sessions.length === 0 && subjects.length > 0) {
+      const times = ['9:00 AM', '11:00 AM', '2:00 PM', '4:00 PM'];
+      let sessionCount = 0;
+      
+      for (const subject of subjects) {
+        if (sessionCount >= 4) break;
+        
+        for (const chapter of subject.chapters) {
+          if (sessionCount >= 4) break;
+          
+          const pendingTopics = chapter.topics.filter(t => t.status === 'pending' || t.status === 'in-progress');
+          
+          for (const topic of pendingTopics.slice(0, 1)) {
+            sessions.push({
+              id: sessionCount + 1,
+              subject: subject.name,
+              topic: `${chapter.name}: ${topic.name}`,
+              time: times[sessionCount],
+              duration: topic.timeAllocated || 60,
+              status: sessionCount === 0 ? 'current' : 'upcoming',
+              color: subject.color
+            });
+            sessionCount++;
+            if (sessionCount >= 4) break;
+          }
+        }
+      }
+    }
+    
+    return sessions;
+  }, [subjects, roadmap]);
 
   const upcomingExams = subjects
     .filter(s => s.examDate)
@@ -96,8 +154,13 @@ const Dashboard = () => {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <Button variant="ghost" size="icon">
-                <Bell className="h-5 w-5" />
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => navigate('/study-session')}
+                title="Pomodoro Timer"
+              >
+                <Timer className="h-5 w-5" />
               </Button>
               <Button variant="ghost" size="icon" onClick={() => navigate('/settings')}>
                 <Settings className="h-5 w-5" />
@@ -112,6 +175,13 @@ const Dashboard = () => {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
+        {loading ? (
+          <Card className="p-12 text-center">
+            <div className="h-16 w-16 mx-auto mb-4 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+            <h3 className="text-xl font-semibold mb-2">Loading your dashboard...</h3>
+          </Card>
+        ) : (
+          <>
         {/* Welcome Section */}
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -123,16 +193,10 @@ const Dashboard = () => {
               <h2 className="text-3xl font-bold">Good Morning, {user?.name || 'Student'}! 👋</h2>
               <p className="text-muted-foreground">Let's make today productive!</p>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-warning/10 border border-warning/20">
-                <Flame className="h-5 w-5 text-warning" />
-                <span className="font-semibold text-warning">{streak}-day Streak</span>
-              </div>
-              <Button onClick={() => navigate('/subjects')} className="gradient-primary text-white">
-                <Plus className="h-4 w-4 mr-2" />
-                Add Topics
-              </Button>
-            </div>
+            <Button onClick={() => navigate('/subjects')} className="gradient-primary text-white">
+              <Plus className="h-4 w-4 mr-2" />
+              Add Topics
+            </Button>
           </div>
         </motion.div>
 
@@ -212,7 +276,7 @@ const Dashboard = () => {
         </div>
 
         {/* AI Roadmap Section */}
-        {roadmap ? (
+        {roadmap && subjects.length > 0 ? (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -267,11 +331,6 @@ const Dashboard = () => {
                   </div>
                 )}
               </div>
-
-              <Button onClick={() => navigate('/roadmap')} variant="outline" className="w-full">
-                View Full Roadmap
-                <ChevronRight className="h-4 w-4 ml-2" />
-              </Button>
             </Card>
           </motion.div>
         ) : (
@@ -309,10 +368,16 @@ const Dashboard = () => {
           <motion.div variants={item} className="lg:col-span-2">
             <Card className="p-6 h-full">
               <div className="flex items-center gap-2 mb-6">
-                <Calendar className="h-5 w-5 text-primary" />
-                <h3 className="text-xl font-semibold">Today's Schedule</h3>
-              </div>
+                  <Calendar className="h-5 w-5 text-primary" />
+                  <h3 className="text-xl font-semibold">Today's Schedule</h3>
+                </div>
 
+              {todaySessions.length === 0 ? (
+                <div className="text-center py-8">
+                  <Calendar className="h-12 w-12 mx-auto mb-3 text-muted-foreground" />
+                  <p className="text-muted-foreground">No study sessions scheduled for today</p>
+              </div>
+              ) : (
               <div className="space-y-3">
                 {todaySessions.map((session, index) => (
                   <motion.div
@@ -341,16 +406,6 @@ const Dashboard = () => {
                             <p className="text-xs text-muted-foreground">{session.duration} min</p>
                           </div>
                         </div>
-                        {session.status === 'current' && (
-                          <Button 
-                            size="sm" 
-                            className="mt-2 gradient-primary text-white"
-                            onClick={() => navigate('/study-session')}
-                          >
-                            <Play className="h-4 w-4 mr-2" />
-                            Start Session
-                          </Button>
-                        )}
                         {session.status === 'completed' && (
                           <div className="flex items-center gap-2 mt-2 text-success">
                             <div className="h-2 w-2 rounded-full bg-success" />
@@ -362,6 +417,7 @@ const Dashboard = () => {
                   </motion.div>
                 ))}
               </div>
+              )}
             </Card>
           </motion.div>
 
@@ -444,7 +500,7 @@ const Dashboard = () => {
                     onClick={() => navigate('/study-session')}
                   >
                     <Play className="h-4 w-4 mr-2" />
-                    Start Study Session
+                    Start Pomodoro Timer
                   </Button>
                   <Button 
                     variant="outline" 
@@ -486,30 +542,30 @@ const Dashboard = () => {
                   </Button>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {subjects.map((subject) => (
+              <div className="space-y-4">
+                {subjects.map((subject) => (
                     <div key={subject.id}>
-                      <div className="flex justify-between mb-2">
+                    <div className="flex justify-between mb-2">
                         <div className="flex items-center gap-2">
                           <div className={`h-3 w-3 rounded ${subject.color}`} />
-                          <span className="font-medium">{subject.name}</span>
+                      <span className="font-medium">{subject.name}</span>
                           <span className="text-xs text-muted-foreground">
                             ({subject.completedTopics}/{subject.totalTopics} topics)
                           </span>
                         </div>
                         <span className="text-sm font-semibold text-primary">{subject.progress}%</span>
-                      </div>
-                      <div className="relative h-2 bg-muted rounded-full overflow-hidden">
-                        <motion.div
-                          initial={{ width: 0 }}
-                          animate={{ width: `${subject.progress}%` }}
-                          transition={{ duration: 1, delay: 0.2 }}
-                          className="absolute h-full gradient-primary rounded-full"
-                        />
-                      </div>
                     </div>
-                  ))}
-                </div>
+                    <div className="relative h-2 bg-muted rounded-full overflow-hidden">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${subject.progress}%` }}
+                        transition={{ duration: 1, delay: 0.2 }}
+                          className="absolute h-full gradient-primary rounded-full"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
               )}
             </Card>
           </motion.div>
@@ -527,23 +583,23 @@ const Dashboard = () => {
                   <p className="text-sm text-muted-foreground">No exams scheduled</p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {upcomingExams.map((exam) => (
+              <div className="space-y-3">
+                {upcomingExams.map((exam) => (
                     <div key={exam.subject} className="p-3 rounded-lg border border-border hover:border-primary/50 transition-colors">
-                      <div className="flex justify-between items-start mb-2">
+                    <div className="flex justify-between items-start mb-2">
                         <div className="flex items-center gap-2">
                           <div className={`h-2 w-2 rounded-full ${exam.color}`} />
-                          <h4 className="font-semibold">{exam.subject}</h4>
+                      <h4 className="font-semibold">{exam.subject}</h4>
                         </div>
-                        <span className={`text-xs px-2 py-1 rounded-full ${
-                          exam.status === 'on-track' 
-                            ? 'bg-success/10 text-success' 
-                            : 'bg-warning/10 text-warning'
-                        }`}>
-                          {exam.status === 'on-track' ? 'On Track' : 'Needs Attention'}
-                        </span>
-                      </div>
-                      <p className="text-sm text-muted-foreground mb-1">{exam.date}</p>
+                      <span className={`text-xs px-2 py-1 rounded-full ${
+                        exam.status === 'on-track' 
+                          ? 'bg-success/10 text-success' 
+                          : 'bg-warning/10 text-warning'
+                      }`}>
+                        {exam.status === 'on-track' ? 'On Track' : 'Needs Attention'}
+                      </span>
+                    </div>
+                    <p className="text-sm text-muted-foreground mb-1">{exam.date}</p>
                       <div className="flex items-center justify-between">
                         <p className={`text-sm font-medium ${
                           exam.daysLeft < 7 ? 'text-destructive' :
@@ -556,13 +612,15 @@ const Dashboard = () => {
                           Study
                         </Button>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                  </div>
+                ))}
+              </div>
               )}
             </Card>
           </motion.div>
         </motion.div>
+        </>
+        )}
       </main>
     </div>
   );

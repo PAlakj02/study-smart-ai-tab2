@@ -43,50 +43,68 @@ export const generateStudyRoadmap = async (input: RoadmapInput): Promise<StudyRo
   }
 
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+
+    // Calculate weeks until exam
+    const examDate = new Date(input.examDate);
+    const today = new Date();
+    const daysUntilExam = Math.ceil((examDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    const weeksUntilExam = Math.max(1, Math.floor(daysUntilExam / 7));
+    const totalWeeks = Math.min(weeksUntilExam, 12); // Cap at 12 weeks
 
     const prompt = `
-You are an expert educational consultant. Create a detailed, personalized study roadmap for a student with the following details:
+You are an expert educational consultant. Create a DETAILED, SPECIFIC study roadmap.
 
-**Student Information:**
+**Student Details:**
 - Subjects: ${input.subjects.join(', ')}
-- Exam Date: ${input.examDate}
+- Exam Date: ${input.examDate} (${totalWeeks} weeks from now)
 - Current Level: ${input.currentLevel}
 - Daily Study Hours: ${input.studyHoursPerDay} hours
-- Weak Areas: ${input.weakAreas?.join(', ') || 'None specified'}
+- Weak Areas: ${input.weakAreas?.join(', ') || 'Not specified'}
 - Goals: ${input.goals || 'Excel in exams'}
-- Preferred Study Style: ${input.preferredStudyStyle || 'Mixed'}
 
-**Task:**
-Create a week-by-week study roadmap from now until the exam date. For each week, provide:
-1. Main focus area
-2. Specific topics to cover
-3. Achievable goals
-4. Recommended study hours
+**CRITICAL INSTRUCTIONS - READ CAREFULLY:**
 
-Also include:
-- Overall study tips
-- Time management strategies
-- Revision strategies
+1. CREATE ${totalWeeks} CONSECUTIVE WEEKS (Week 1, Week 2, Week 3... Week ${totalWeeks})
+2. EACH TOPIC MUST BE SPECIFIC AND ACTIONABLE - NOT GENERIC
+3. FOCUS ON WEAK AREAS - ${input.weakAreas && input.weakAreas.length > 0 ? `Break down these areas: ${input.weakAreas.join(', ')}` : 'Cover all fundamentals'}
 
-**Format your response as a JSON object with this structure:**
+**FORBIDDEN WORDS (DO NOT USE):**
+- "Mock test", "Practice questions", "Sample papers", "Revision", "Review", "Test preparation"
+
+**REQUIRED TOPIC FORMAT:**
+✓ GOOD: "Learn HTML semantic tags (header, nav, article, section)", "Master CSS Flexbox (justify-content, align-items)", "JavaScript ES6 Arrow Functions and this keyword"
+✗ BAD: "Practice HTML", "Review CSS", "Mock test", "Sample questions"
+
+**WEEK STRUCTURE:**
+- Weeks 1-${Math.ceil(totalWeeks * 0.7)}: Learning new concepts (60-70% of time)
+- Weeks ${Math.ceil(totalWeeks * 0.7) + 1}-${totalWeeks - 1}: Practice with specific exercises
+- Week ${totalWeeks}: Final preparation with timed practice
+
+**CRITICAL JSON FORMATTING RULES:**
+- Return ONLY the JSON object
+- NO comments, NO markdown, NO explanations
+- Use sequential week numbers: 1, 2, 3, 4... ${totalWeeks}
+- Each week needs 5-7 SPECIFIC topics
+
+**JSON STRUCTURE:**
 {
-  "title": "Personalized Study Roadmap",
-  "description": "A brief overview of the plan",
-  "totalWeeks": number,
+  "title": "Study Roadmap: ${input.subjects.join(' & ')}",
+  "description": "${totalWeeks}-week plan from now until ${input.examDate}",
+  "totalWeeks": ${totalWeeks},
   "weeklyPlans": [
     {
       "week": 1,
-      "focus": "Foundation building",
-      "topics": ["Topic 1", "Topic 2"],
-      "goals": ["Goal 1", "Goal 2"],
-      "studyHours": 35
+      "focus": "${input.subjects[0]} ${input.weakAreas && input.weakAreas[0] ? '- ' + input.weakAreas[0] + ' Basics' : 'Fundamentals'}",
+      "topics": ["Learn [specific concept 1]", "Understand [specific concept 2]", "Master [specific skill 3]", "Practice [specific technique 4]", "Build [specific project 5]"],
+      "goals": ["Complete all topics", "Solve 10 related problems"],
+      "studyHours": ${input.studyHoursPerDay * 7}
     }
   ],
-  "tips": ["Tip 1", "Tip 2", "Tip 3"]
+  "tips": ["Create flashcards for key concepts", "Practice daily for consistency", "Review mistakes immediately", "Take short breaks every hour", "Test yourself weekly"]
 }
 
-Make it realistic, achievable, and motivating. Consider the student's weak areas and daily availability.
+Return ONLY valid JSON. Make every topic CONCRETE and SPECIFIC to the subjects and weak areas.
 `;
 
     const result = await model.generateContent(prompt);
@@ -99,7 +117,33 @@ Make it realistic, achievable, and motivating. Consider the student's weak areas
       throw new Error('Failed to parse AI response');
     }
 
-    const roadmapData = JSON.parse(jsonMatch[0]);
+    // Clean the JSON by removing comments and markdown code blocks
+    let cleanedJson = jsonMatch[0];
+    
+    // Remove markdown code block markers first
+    cleanedJson = cleanedJson.replace(/```json/gi, '');
+    cleanedJson = cleanedJson.replace(/```/g, '');
+    
+    // Remove single-line comments (// ...) - more aggressive
+    cleanedJson = cleanedJson.replace(/\/\/[^\n]*/g, '');
+    
+    // Remove multi-line comments (/* ... */)
+    cleanedJson = cleanedJson.replace(/\/\*[\s\S]*?\*\//g, '');
+    
+    // Clean up any trailing commas before closing braces/brackets (invalid JSON)
+    cleanedJson = cleanedJson.replace(/,(\s*[}\]])/g, '$1');
+    
+    // Remove any extra whitespace
+    cleanedJson = cleanedJson.trim();
+
+    let roadmapData;
+    try {
+      roadmapData = JSON.parse(cleanedJson);
+    } catch (parseError) {
+      console.error('JSON parse error, trying fallback:', parseError);
+      console.error('Cleaned JSON:', cleanedJson);
+      throw new Error('Failed to parse AI response as JSON');
+    }
 
     return {
       id: `roadmap-${Date.now()}`,
@@ -123,27 +167,46 @@ const generateDemoRoadmap = (input: RoadmapInput): StudyRoadmap => {
   const weeklyPlans: WeekPlan[] = [];
   
   for (let i = 1; i <= totalWeeks; i++) {
-    const isEarlyStage = i <= totalWeeks / 3;
-    const isMidStage = i > totalWeeks / 3 && i <= (2 * totalWeeks) / 3;
-    const isRevisionStage = i > (2 * totalWeeks) / 3;
+    const isEarlyStage = i <= totalWeeks * 0.6;
+    const isMidStage = i > totalWeeks * 0.6 && i <= totalWeeks * 0.9;
+    const subject = input.subjects[(i - 1) % input.subjects.length];
+    const weakArea = input.weakAreas && input.weakAreas[(i - 1) % input.weakAreas.length];
 
     weeklyPlans.push({
       week: i,
       focus: isEarlyStage 
-        ? `Foundation & Concept Building - ${input.subjects[i % input.subjects.length]}`
+        ? `${subject} - ${weakArea || 'Fundamentals'}`
         : isMidStage
-        ? `Practice & Application - ${input.subjects[i % input.subjects.length]}`
-        : `Revision & Mock Tests - ${input.subjects[i % input.subjects.length]}`,
+        ? `${subject} - Advanced ${weakArea || 'Concepts'}`
+        : `${subject} - Final Preparation`,
       topics: isEarlyStage
-        ? ['Core Concepts', 'Fundamental Theories', 'Basic Problem Solving']
+        ? [
+            `Understand ${weakArea || subject} basic concepts`,
+            `Learn ${weakArea || subject} fundamental principles`,
+            `Master ${weakArea || subject} core techniques`,
+            `Practice ${weakArea || subject} basic exercises`,
+            `Build simple ${subject} examples`
+          ]
         : isMidStage
-        ? ['Advanced Problems', 'Previous Year Questions', 'Chapter-wise Tests']
-        : ['Complete Revision', 'Mock Tests', 'Weak Area Focus'],
-      goals: isEarlyStage
-        ? ['Complete chapter readings', 'Make detailed notes', 'Solve 20+ practice problems']
-        : isMidStage
-        ? ['Solve 50+ problems', 'Complete 2 chapter tests', 'Improve speed']
-        : ['Complete 2 full-length tests', 'Revise all formulas', 'Score 80%+ in mocks'],
+        ? [
+            `Solve complex ${weakArea || subject} problems`,
+            `Apply ${weakArea || subject} in real scenarios`,
+            `Optimize ${weakArea || subject} solutions`,
+            `Build advanced ${subject} projects`,
+            `Debug ${weakArea || subject} issues`
+          ]
+        : [
+            `Speed drills for ${weakArea || subject}`,
+            `Timed problem solving - ${subject}`,
+            `Create ${subject} reference notes`,
+            `Fix ${weakArea || subject} weak points`,
+            `Final ${subject} confidence building`
+          ],
+      goals: [
+        `Complete all ${weakArea || subject} topics`,
+        `Solve 15+ exercises`,
+        `Build 1 project`
+      ],
       studyHours: input.studyHoursPerDay * 7
     });
   }

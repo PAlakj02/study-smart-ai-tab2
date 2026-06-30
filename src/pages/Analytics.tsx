@@ -50,7 +50,7 @@ const Analytics = () => {
   ];
 
   // Calculate status breakdown across all topics
-  let statusCounts = {
+  const statusCounts = {
     pending: 0,
     inProgress: 0,
     completed: 0,

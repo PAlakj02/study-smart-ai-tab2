@@ -6,19 +6,37 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+
+# Environment / secrets — NEVER commit these
 .env
+.env.local
+.env.*.local
+*.env
+
+# Firebase service accounts
+*-firebase-adminsdk-*.json
+firebase-service-account*.json
+serviceAccount*.json
+google-services.json
+
+# Dependencies
 node_modules
+
+# Build output
 dist
 dist-ssr
-*.local
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+# Local debug / cache
+*.local
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea

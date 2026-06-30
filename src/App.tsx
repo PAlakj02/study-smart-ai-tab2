@@ -15,6 +15,10 @@ import Settings from "./pages/Settings";
 import SyllabusManager from "./pages/SyllabusManager";
 import Analytics from "./pages/Analytics";
 import RoadmapGenerator from "./pages/RoadmapGenerator";
+import StudyCalendar from "./pages/StudyCalendar";
+import Motivation from "./pages/Motivation";
+import ParentProgress from "./pages/ParentProgress";
+import Tutorial from "./pages/Tutorial";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -99,6 +103,38 @@ const AppRoutes = () => {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/calendar"
+        element={
+          <ProtectedRoute>
+            <StudyCalendar />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/motivation"
+        element={
+          <ProtectedRoute>
+            <Motivation />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/parent"
+        element={
+          <ProtectedRoute>
+            <ParentProgress />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tutorial"
+        element={
+          <ProtectedRoute>
+            <Tutorial />
+          </ProtectedRoute>
+        }
+      />
       <Route path="*" element={<NotFound />} />
     </Routes>
   );
@@ -112,7 +148,7 @@ const App = () => {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
+        <AuthProvider>
         <StudyDataProvider>
           <TooltipProvider>
             <Toaster />

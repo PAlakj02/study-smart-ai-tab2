@@ -6,7 +6,7 @@ import {
   onAuthStateChanged,
   updateProfile
 } from 'firebase/auth';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '@/config/firebase';
 
 interface User {
@@ -32,19 +32,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     // Listen to auth state changes
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       if (firebaseUser) {
-        // User is signed in
-        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-        const userData = userDoc.data();
-        
         setUser({
           id: firebaseUser.uid,
           email: firebaseUser.email || '',
-          name: userData?.name || firebaseUser.displayName || 'Student'
+          name: firebaseUser.displayName || 'Student',
         });
       } else {
-        // User is signed out
         setUser(null);
       }
       setLoading(false);
@@ -72,12 +67,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         displayName: name
       });
 
-      // Store additional user data in Firestore
-      await setDoc(doc(db, 'users', userCredential.user.uid), {
+      // Store additional user data in Firestore (non-blocking)
+      setDoc(doc(db, 'users', userCredential.user.uid), {
         name,
         email,
         createdAt: new Date().toISOString()
-      });
+      }).catch(err => console.error('Failed to save user profile:', err));
 
       return true;
     } catch (error: any) {

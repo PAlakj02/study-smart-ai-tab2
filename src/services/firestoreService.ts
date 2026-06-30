@@ -1,15 +1,16 @@
-import { 
-  collection, 
-  doc, 
-  setDoc, 
-  getDoc, 
-  getDocs, 
-  updateDoc, 
-  deleteDoc, 
-  query, 
+import {
+  collection,
+  doc,
+  setDoc,
+  getDoc,
+  getDocs,
+  updateDoc,
+  deleteDoc,
+  query,
   where,
   serverTimestamp,
-  Timestamp 
+  Timestamp,
+  writeBatch
 } from 'firebase/firestore';
 import { db } from '@/config/firebase';
 
@@ -58,6 +59,27 @@ export interface Roadmap {
   tips: string[];
   createdAt: string;
   updatedAt: string;
+  // Extended scheduling fields — optional for backward compatibility
+  availableStudyDays?: number[];
+  preferredStartTime?: string;
+  preferredEndTime?: string;
+  sessionLengthMinutes?: number;
+  breakLengthMinutes?: number;
+  examUrgency?: 'low' | 'medium' | 'high';
+  focusPreference?: 'short' | 'long' | 'mixed';
+  includeBufferDays?: boolean;
+  neurodivergentSupport?: boolean;
+  neurodivergentOptions?: Record<string, boolean>;
+  suggestedSessions?: Array<{
+    date: string;
+    day: string;
+    startTime: string;
+    endTime: string;
+    duration: number;
+    subject: string;
+    topic: string;
+    status: string;
+  }>;
 }
 
 export interface WeeklyPlan {
@@ -74,28 +96,52 @@ export interface StudySession {
   subjectName: string;
   topic: string;
   duration: number;
-  date: string;
+  date: string;       // "YYYY-MM-DD" for roadmap sessions; full ISO for Pomodoro sessions
+  startTime?: string; // "HH:MM"
+  endTime?: string;   // "HH:MM"
+  status?: 'scheduled' | 'completed' | 'missed' | 'skipped';
+  completed?: boolean;
+  roadmapId?: string; // set when this session was generated from a roadmap
   createdAt: string;
+}
+
+/** Returns true only for plain objects — not FieldValue, Date, etc. */
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+  return val !== null && typeof val === 'object' && val.constructor === Object;
+}
+
+/** Recursively strip keys whose value is undefined — Firestore rejects them.
+ *  Skips non-plain objects (FieldValue sentinels like serverTimestamp()) to preserve them. */
+function removeUndefined<T>(obj: T): T {
+  if (Array.isArray(obj)) return obj.map(removeUndefined) as unknown as T;
+  if (isPlainObject(obj)) {
+    return Object.fromEntries(
+      Object.entries(obj)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => [k, removeUndefined(v)]),
+    ) as T;
+  }
+  return obj;
 }
 
 // Subjects
 export const saveSubject = async (userId: string, subject: Omit<Subject, 'userId' | 'createdAt' | 'updatedAt'>) => {
   const subjectRef = doc(db, 'subjects', subject.id);
-  await setDoc(subjectRef, {
+  await setDoc(subjectRef, removeUndefined({
     ...subject,
     userId,
     createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
+    updatedAt: serverTimestamp(),
+  }));
   return subject.id;
 };
 
 export const updateSubject = async (subjectId: string, updates: Partial<Subject>) => {
   const subjectRef = doc(db, 'subjects', subjectId);
-  await updateDoc(subjectRef, {
+  await updateDoc(subjectRef, removeUndefined({
     ...updates,
-    updatedAt: serverTimestamp()
-  });
+    updatedAt: serverTimestamp(),
+  }) as Record<string, unknown>);
 };
 
 export const deleteSubject = async (subjectId: string) => {
@@ -138,23 +184,26 @@ export const getSubject = async (subjectId: string): Promise<Subject | null> => 
 export const saveRoadmap = async (userId: string, roadmap: Omit<Roadmap, 'id' | 'userId' | 'createdAt' | 'updatedAt'>) => {
   const roadmapId = `roadmap_${Date.now()}`;
   const roadmapRef = doc(db, 'roadmaps', roadmapId);
-  
-  await setDoc(roadmapRef, {
+
+  await setDoc(roadmapRef, removeUndefined({
     ...roadmap,
     userId,
     createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-  
+    updatedAt: serverTimestamp(),
+  }));
+
+  // Cache the latest roadmap ID so getLatestRoadmap can skip the full collection scan
+  await setDoc(doc(db, 'userPreferences', userId), { latestRoadmapId: roadmapId }, { merge: true });
+
   return roadmapId;
 };
 
 export const updateRoadmap = async (roadmapId: string, updates: Partial<Roadmap>) => {
   const roadmapRef = doc(db, 'roadmaps', roadmapId);
-  await updateDoc(roadmapRef, {
+  await updateDoc(roadmapRef, removeUndefined({
     ...updates,
-    updatedAt: serverTimestamp()
-  });
+    updatedAt: serverTimestamp(),
+  }) as Record<string, unknown>);
 };
 
 export const deleteRoadmap = async (roadmapId: string) => {
@@ -193,12 +242,25 @@ export const getRoadmap = async (roadmapId: string): Promise<Roadmap | null> => 
   } as Roadmap;
 };
 
-export const getLatestRoadmap = async (userId: string): Promise<Roadmap | null> => {
+/** Pass `latestRoadmapId` from already-fetched preferences to avoid a redundant Firestore read */
+export const getLatestRoadmap = async (userId: string, latestRoadmapId?: string): Promise<Roadmap | null> => {
+  const candidateId = latestRoadmapId ?? (await getDoc(doc(db, 'userPreferences', userId))).data()?.latestRoadmapId;
+  if (candidateId) {
+    const snap = await getDoc(doc(db, 'roadmaps', candidateId));
+    if (snap.exists()) {
+      const data = snap.data();
+      return {
+        ...data,
+        id: snap.id,
+        createdAt: data.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+      } as Roadmap;
+    }
+  }
+  // Fallback for old accounts without the cached ID
   const roadmaps = await getRoadmaps(userId);
   if (roadmaps.length === 0) return null;
-  
-  // Sort by createdAt and return the latest
-  return roadmaps.sort((a, b) => 
+  return roadmaps.sort((a, b) =>
     new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   )[0];
 };
@@ -208,11 +270,11 @@ export const saveStudySession = async (userId: string, session: Omit<StudySessio
   const sessionId = `session_${Date.now()}`;
   const sessionRef = doc(db, 'studySessions', sessionId);
   
-  await setDoc(sessionRef, {
+  await setDoc(sessionRef, removeUndefined({
     ...session,
     userId,
-    createdAt: serverTimestamp()
-  });
+    createdAt: serverTimestamp(),
+  }));
   
   return sessionId;
 };
@@ -232,6 +294,65 @@ export const getStudySessions = async (userId: string): Promise<StudySession[]> 
   });
 };
 
+export const updateStudySession = async (sessionId: string, updates: Partial<StudySession>) => {
+  const ref = doc(db, 'studySessions', sessionId);
+  await updateDoc(ref, removeUndefined({ ...updates }) as Record<string, unknown>);
+};
+
+type TimetableEntry = {
+  date: string;
+  day: string;
+  startTime: string;
+  endTime: string;
+  duration: number;
+  subject: string;
+  topic: string;
+  status: string;
+};
+
+/**
+ * Persist roadmap-generated session blocks to Firestore.
+ * Uses a stable document ID (rdmp_<roadmapId>_<date>_<HHMM>) so re-saving
+ * the same roadmap is idempotent — existing sessions are NOT overwritten.
+ */
+export const createSessionsFromRoadmap = async (
+  userId: string,
+  roadmapId: string,
+  sessions: TimetableEntry[],
+) => {
+  // Check if we already created sessions for this roadmap
+  const existing = await getDocs(
+    query(collection(db, 'studySessions'), where('roadmapId', '==', roadmapId)),
+  );
+  if (!existing.empty) return; // already seeded — skip to prevent duplicates
+
+  const batch = writeBatch(db);
+  for (const s of sessions) {
+    const sessionId = `rdmp_${roadmapId}_${s.date}_${s.startTime.replace(':', '')}`;
+    const ref = doc(db, 'studySessions', sessionId);
+    batch.set(ref, removeUndefined({
+      userId,
+      roadmapId,
+      subjectId: '',
+      subjectName: s.subject,
+      topic: s.topic,
+      duration: s.duration,
+      date: s.date,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      status: 'scheduled',
+      completed: false,
+      createdAt: serverTimestamp(),
+    }));
+  }
+  await batch.commit();
+};
+
+export const getStudySessionsByDate = async (userId: string, date: string): Promise<StudySession[]> => {
+  const all = await getStudySessions(userId);
+  return all.filter(s => s.date.substring(0, 10) === date);
+};
+
 // User Preferences
 export interface UserPreferences {
   userId: string;
@@ -243,11 +364,11 @@ export interface UserPreferences {
 
 export const saveUserPreferences = async (userId: string, preferences: Partial<UserPreferences>) => {
   const prefsRef = doc(db, 'userPreferences', userId);
-  await setDoc(prefsRef, {
+  await setDoc(prefsRef, removeUndefined({
     ...preferences,
     userId,
-    updatedAt: serverTimestamp()
-  }, { merge: true });
+    updatedAt: serverTimestamp(),
+  }), { merge: true });
 };
 
 export const getUserPreferences = async (userId: string): Promise<UserPreferences | null> => {

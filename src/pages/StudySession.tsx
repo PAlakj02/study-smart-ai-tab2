@@ -57,10 +57,13 @@ const StudySession = () => {
     if (studiedMinutes > 0 && subjects.length > 0) {
       try {
         await addSession({
-          subjectId: subjects[0].id, // Default to first subject for now
+          subjectId: subjects[0].id,
+          subjectName: subjects[0].name,
+          topic: 'Pomodoro session',
           duration: studiedMinutes,
           date: new Date().toISOString(),
-          completed: true
+          status: 'completed',
+          completed: true,
         });
       } catch (error) {
         console.error('Error saving session:', error);

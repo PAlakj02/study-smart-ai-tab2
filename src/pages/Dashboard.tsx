@@ -135,7 +135,11 @@ const Dashboard = () => {
   const panelDayFocusSessions = panelSubject && focusDate
     ? sessions.filter(s => s.subjectId === panelSubject.id && s.date.substring(0, 10) === focusDate)
     : [];
-  const panelExamDate = panelSubject?.examDate ?? panelRoadmap?.endDate;
+  // Prefer the roadmap's own recorded exam date (fixed at generation time);
+  // fall back to the subject's exam date only for legacy roadmaps saved
+  // before this field existed. Never falls back to endDate — that's now an
+  // independently computed value (start + duration), not a copy of examDate.
+  const panelExamDate = panelRoadmap?.examDate ?? panelSubject?.examDate;
   const panelDaysLeft = panelExamDate
     ? Math.ceil((new Date(panelExamDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
     : null;

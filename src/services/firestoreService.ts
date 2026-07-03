@@ -49,8 +49,8 @@ export interface Roadmap {
   subjectId?: string;    // optional so pre-existing global roadmap docs still typecheck
   subjectName?: string;
   topicTags?: string[];
-  startDate?: string;    // "YYYY-MM-DD"
-  endDate?: string;      // "YYYY-MM-DD" — new docs always set this; old docs fall back to examDate
+  startDate?: string;    // "YYYY-MM-DD" — user-selected
+  endDate?: string;      // "YYYY-MM-DD" — computed as startDate + totalWeeks, independent of examDate
   title: string;
   description: string;
   subjects: string[];
@@ -118,10 +118,20 @@ function isPlainObject(val: unknown): val is Record<string, unknown> {
   return val !== null && typeof val === 'object' && val.constructor === Object;
 }
 
-/** Recursively strip keys whose value is undefined — Firestore rejects them.
- *  Skips non-plain objects (FieldValue sentinels like serverTimestamp()) to preserve them. */
+/** Recursively strip keys whose value is undefined — Firestore rejects them
+ *  anywhere in a write, including inside arrays. Skips non-plain objects
+ *  (FieldValue sentinels like serverTimestamp()) to preserve them.
+ *
+ *  Array elements that are `undefined` are converted to `null` rather than
+ *  removed — removing them would shift every later index, which silently
+ *  breaks arrays that rely on positional correspondence with a sibling array
+ *  (e.g. WeekPlan.topicIds must stay index-aligned with WeekPlan.topics).
+ *  `null` and `undefined` are both falsy, so existing reads like
+ *  `topicIds?.[i] ? ... : ...` behave identically either way. */
 function removeUndefined<T>(obj: T): T {
-  if (Array.isArray(obj)) return obj.map(removeUndefined) as unknown as T;
+  if (Array.isArray(obj)) {
+    return obj.map(v => (v === undefined ? null : removeUndefined(v))) as unknown as T;
+  }
   if (isPlainObject(obj)) {
     return Object.fromEntries(
       Object.entries(obj)

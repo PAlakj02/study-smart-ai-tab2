@@ -86,8 +86,13 @@ export interface StudyRoadmap {
   subjectId: string;
   subjectName: string;
   topicTags?: string[];
-  startDate: string;   // "YYYY-MM-DD"
-  endDate: string;     // "YYYY-MM-DD" — mirrors examDate, exposed for Dashboard/Calendar consumers
+  startDate: string;   // "YYYY-MM-DD" — user-selected, fixed
+  examDate: string;    // "YYYY-MM-DD" — user-selected, fixed. NEVER derive this from endDate.
+  // "YYYY-MM-DD" — always computed as startDate + totalWeeks*7 days, i.e. the
+  // last day this roadmap's weekly plans actually cover. Independent of
+  // examDate: when the exam is far enough out that totalWeeks gets capped,
+  // endDate legitimately falls before examDate — it is NEVER a copy of it.
+  endDate: string;
   title: string;
   description: string;
   totalWeeks: number;
@@ -161,6 +166,14 @@ const buildTopicRefs = (input: RoadmapInput): TopicDetail[] =>
     topicId: input.topicDetails?.[i]?.topicId,
     description: input.topicDetails?.[i]?.description,
   }));
+
+/** The roadmap's own end date — start + totalWeeks — kept deliberately
+ *  independent of examDate (see StudyRoadmap.endDate doc comment). */
+const computeEndDate = (startDate: Date, totalWeeks: number): string => {
+  const end = new Date(startDate);
+  end.setDate(end.getDate() + totalWeeks * 7);
+  return end.toISOString().split('T')[0];
+};
 
 const buildTips = (input: RoadmapInput): string[] => {
   const nd = input.neurodivergentSupport ? input.neurodivergentOptions : null;
@@ -442,7 +455,8 @@ ${ndBlock}
       subjectName: subject,
       topicTags: input.topicTags,
       startDate: input.startDate ?? new Date().toISOString().split('T')[0],
-      endDate: input.examDate,
+      examDate: input.examDate,
+      endDate: computeEndDate(startDate, totalWeeks),
       title: roadmapData?.title || `Study Roadmap: ${subject}`,
       // Always built from our own authoritative totalWeeks — never trust the AI's
       // own description text, which can state a stale/wrong week count even when
@@ -519,7 +533,8 @@ const generateDemoRoadmap = (input: RoadmapInput): StudyRoadmap => {
     subjectName: input.subjects[0] ?? '',
     topicTags: input.topicTags,
     startDate: input.startDate ?? new Date().toISOString().split('T')[0],
-    endDate: input.examDate,
+    examDate: input.examDate,
+    endDate: computeEndDate(startDate, calendarWeeks),
     title: `${calendarWeeks}-Week Study Roadmap`,
     description: `A personalised ${calendarWeeks}-week plan covering ${input.subjects.join(', ')} — ${input.studyHoursPerDay} h/day on ${(input.availableStudyDays ?? [1, 2, 3, 4, 5, 6]).map(d => DAY_NAMES[d]).join(', ')}.`,
     totalWeeks: calendarWeeks,

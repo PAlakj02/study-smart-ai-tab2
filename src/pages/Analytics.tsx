@@ -3,60 +3,62 @@ import { useNavigate } from 'react-router-dom';
 import { useStudyData } from '@/context/StudyDataContext';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { ArrowLeft, TrendingUp, Clock, Target, BookOpen } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
+import { ArrowLeft, TrendingUp, Clock, Target, BookOpen, Calendar } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+
+/** Local calendar date string — NOT toISOString(), which converts to UTC
+ *  first and can land on the wrong day depending on timezone. Same safe
+ *  pattern already used in StudyCalendar.tsx / Dashboard.tsx. */
+function toLocalDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 const Analytics = () => {
   const navigate = useNavigate();
   const { subjects, totalStudyHours, sessions } = useStudyData();
 
-  // Calculate overall progress from subjects
-  const overallProgress = subjects.length > 0 
-    ? Math.round(subjects.reduce((acc, s) => acc + s.progress, 0) / subjects.length)
-    : 0;
-
-  // Calculate total topics
+  // Calculate total topics (pooled across every subject)
   const totalTopics = subjects.reduce((acc, s) => acc + s.totalTopics, 0);
   const completedTopics = subjects.reduce((acc, s) => acc + s.completedTopics, 0);
 
-  // Generate weekly study data based on study hours distribution
-  const avgHoursPerDay = totalStudyHours > 0 ? totalStudyHours / 30 : 4; // Estimate over ~30 days
-  const weeklyStudyData = [
-    { day: 'Mon', hours: Number((avgHoursPerDay * (0.9 + Math.random() * 0.2)).toFixed(1)) },
-    { day: 'Tue', hours: Number((avgHoursPerDay * (0.9 + Math.random() * 0.2)).toFixed(1)) },
-    { day: 'Wed', hours: Number((avgHoursPerDay * (0.85 + Math.random() * 0.2)).toFixed(1)) },
-    { day: 'Thu', hours: Number((avgHoursPerDay * (1.0 + Math.random() * 0.2)).toFixed(1)) },
-    { day: 'Fri', hours: Number((avgHoursPerDay * (0.95 + Math.random() * 0.2)).toFixed(1)) },
-    { day: 'Sat', hours: Number((avgHoursPerDay * (1.1 + Math.random() * 0.2)).toFixed(1)) },
-    { day: 'Sun', hours: Number((avgHoursPerDay * (0.7 + Math.random() * 0.2)).toFixed(1)) }
-  ];
+  // Overall progress = completed topics / total topics across the whole
+  // planner — not an average of each subject's own percentage, which would
+  // weight a 2-topic subject the same as a 50-topic one.
+  const overallProgress = totalTopics > 0
+    ? Math.round((completedTopics / totalTopics) * 100)
+    : 0;
 
-  // Subject distribution by total topics
-  const subjectDistribution = subjects
-    .filter(s => s.totalTopics > 0)
-    .map(s => ({
-      name: s.name,
-      value: s.totalTopics,
-      completedValue: s.completedTopics,
-      color: s.color
-    }));
+  // Weekly Study Hours — real completed session durations for the current
+  // Mon-Sun week, grouped by day. No random/estimated values.
+  const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const monday = (() => {
+    const d = new Date();
+    const day = d.getDay(); // 0=Sun..6=Sat
+    d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
+    return d;
+  })();
+  const weeklyStudyData = DAY_LABELS.map((label, i) => {
+    const d = new Date(monday);
+    d.setDate(d.getDate() + i);
+    const ds = toLocalDateStr(d);
+    const minutes = sessions
+      .filter(s => s.completed && s.date.substring(0, 10) === ds)
+      .reduce((sum, s) => sum + s.duration, 0);
+    return { day: label, hours: Number((minutes / 60).toFixed(1)) };
+  });
+  const hasAnySessionHistory = sessions.length > 0;
 
-  // Generate progress trend based on actual progress
-  const progressTrend = [
-    { week: 'Week 1', progress: Math.max(0, overallProgress - 30) },
-    { week: 'Week 2', progress: Math.max(0, overallProgress - 20) },
-    { week: 'Week 3', progress: Math.max(0, overallProgress - 10) },
-    { week: 'Week 4', progress: overallProgress }
-  ];
-
-  // Calculate status breakdown across all topics
+  // Calculate status breakdown across all topics (real Topic.status values)
   const statusCounts = {
     pending: 0,
     inProgress: 0,
     completed: 0,
     revising: 0
   };
-  
+
   subjects.forEach(subject => {
     subject.chapters.forEach(chapter => {
       chapter.topics.forEach(topic => {
@@ -75,10 +77,21 @@ const Analytics = () => {
     { name: 'Pending', value: statusCounts.pending, color: '#6b7280' }
   ].filter(item => item.value > 0);
 
+  // Upcoming Exams — same real computation Dashboard.tsx already uses,
+  // sourced from each subject's actual exam date.
+  const upcomingExams = subjects
+    .filter(s => s.examDate)
+    .map(s => ({
+      subject: s.name,
+      color: s.color,
+      date: new Date(s.examDate!).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      daysLeft: Math.ceil((new Date(s.examDate!).getTime() - Date.now()) / (1000 * 60 * 60 * 24)),
+      status: s.progress >= 60 ? 'on-track' : 'needs-attention',
+    }))
+    .sort((a, b) => a.daysLeft - b.daysLeft);
+
   const totalWeeklyHours = weeklyStudyData.reduce((acc, day) => acc + day.hours, 0);
   const avgDailyHours = (totalWeeklyHours / 7).toFixed(1);
-
-  const COLORS = ['#3b82f6', '#8b5cf6', '#10b981', '#f97316', '#ef4444', '#ec4899'];
 
   return (
     <div className="min-h-screen bg-background">
@@ -189,27 +202,37 @@ const Analytics = () => {
           >
             <Card className="p-6">
               <h3 className="text-lg font-semibold mb-6">Weekly Study Hours</h3>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={weeklyStudyData}>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                  <XAxis dataKey="day" />
-                  <YAxis />
-                  <Tooltip
-                    contentStyle={{
-                      background: 'hsl(var(--card))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: '8px'
-                    }}
-                  />
-                  <Bar dataKey="hours" fill="url(#colorGradient)" radius={[8, 8, 0, 0]} />
-                  <defs>
-                    <linearGradient id="colorGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="hsl(186, 94%, 55%)" />
-                      <stop offset="100%" stopColor="hsl(231, 48%, 48%)" />
-                    </linearGradient>
-                  </defs>
-                </BarChart>
-              </ResponsiveContainer>
+              {!hasAnySessionHistory ? (
+                <div className="flex items-center justify-center h-[250px] text-muted-foreground">
+                  <div className="text-center">
+                    <Clock className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                    <p>No study sessions logged yet</p>
+                    <p className="text-xs mt-1">Complete a session to see your weekly hours here</p>
+                  </div>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={250}>
+                  <BarChart data={weeklyStudyData}>
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                    <XAxis dataKey="day" />
+                    <YAxis />
+                    <Tooltip
+                      contentStyle={{
+                        background: 'hsl(var(--card))',
+                        border: '1px solid hsl(var(--border))',
+                        borderRadius: '8px'
+                      }}
+                    />
+                    <Bar dataKey="hours" fill="url(#colorGradient)" radius={[8, 8, 0, 0]} />
+                    <defs>
+                      <linearGradient id="colorGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="hsl(186, 94%, 55%)" />
+                        <stop offset="100%" stopColor="hsl(231, 48%, 48%)" />
+                      </linearGradient>
+                    </defs>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
             </Card>
           </motion.div>
 
@@ -267,27 +290,18 @@ const Analytics = () => {
           >
             <Card className="p-6">
               <h3 className="text-lg font-semibold mb-6">Progress Trend</h3>
-              <ResponsiveContainer width="100%" height={250}>
-                <LineChart data={progressTrend}>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                  <XAxis dataKey="week" />
-                  <YAxis />
-                  <Tooltip
-                    contentStyle={{
-                      background: 'hsl(var(--card))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: '8px'
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="progress"
-                    stroke="hsl(186, 94%, 55%)"
-                    strokeWidth={3}
-                    dot={{ fill: 'hsl(186, 94%, 55%)', r: 6 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+              {/* No timestamped completion history exists yet (Topic.status has
+                  no "completed at" field), so there's no real week-by-week trend
+                  to plot — showing an honest empty state instead of inventing one. */}
+              <div className="flex items-center justify-center h-[250px] text-muted-foreground">
+                <div className="text-center">
+                  <TrendingUp className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                  <p>Not enough history yet</p>
+                  <p className="text-xs mt-1 max-w-[220px] mx-auto">
+                    Progress trends will appear here once completion history builds up over time
+                  </p>
+                </div>
+              </div>
             </Card>
           </motion.div>
 
@@ -329,6 +343,53 @@ const Analytics = () => {
             </Card>
           </motion.div>
         </div>
+
+        {/* Upcoming Exams — computed from each subject's real exam date */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.9 }}
+        >
+          <Card className="p-6">
+            <div className="flex items-center gap-2 mb-6">
+              <Calendar className="h-5 w-5 text-primary" />
+              <h3 className="text-lg font-semibold">Upcoming Exams</h3>
+            </div>
+            {upcomingExams.length === 0 ? (
+              <div className="flex items-center justify-center h-[120px] text-muted-foreground">
+                <div className="text-center">
+                  <Calendar className="h-10 w-10 mx-auto mb-2 opacity-50" />
+                  <p>No exams scheduled</p>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {upcomingExams.map(exam => (
+                  <div key={exam.subject} className="p-4 rounded-lg border border-border hover:border-primary/50 transition-colors">
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex items-center gap-2">
+                        <div className={`h-2 w-2 rounded-full ${exam.color}`} />
+                        <h4 className="font-semibold">{exam.subject}</h4>
+                      </div>
+                      <span className={`text-xs px-2 py-1 rounded-full ${
+                        exam.status === 'on-track' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'
+                      }`}>
+                        {exam.status === 'on-track' ? 'On Track' : 'Needs Attention'}
+                      </span>
+                    </div>
+                    <p className="text-sm text-muted-foreground mb-1">{exam.date}</p>
+                    <p className={`text-sm font-medium ${
+                      exam.daysLeft < 7 ? 'text-destructive' :
+                      exam.daysLeft < 14 ? 'text-warning' : 'text-primary'
+                    }`}>
+                      {exam.daysLeft >= 0 ? `${exam.daysLeft} days left` : 'Date passed'}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </motion.div>
 
       </main>
     </div>

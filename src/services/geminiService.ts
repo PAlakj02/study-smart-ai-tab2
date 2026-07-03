@@ -22,8 +22,21 @@ export interface NeurodivergentOptions {
   lowDistractionMode: boolean;
 }
 
+export interface TopicDetail {
+  name: string;
+  description?: string;
+  topicId?: string;
+}
+
 export interface RoadmapInput {
   subjects: string[];
+  subjectId: string;
+  topicTags?: string[];
+  // Optional richer info for the same names in topicTags — used to give the AI
+  // prompt real descriptions and to carry stable topic IDs through to each
+  // WeekPlan, instead of baking descriptions into the topic name string itself.
+  topicDetails?: TopicDetail[];
+  startDate?: string;         // "YYYY-MM-DD" — defaults to today when omitted
   examDate: string;
   currentLevel: string;
   studyHoursPerDay: number;
@@ -50,6 +63,7 @@ export interface TimetableBlock {
   endTime: string;    // "HH:MM"
   duration: number;   // minutes
   subject: string;
+  subjectId: string;
   topic: string;
   status: 'scheduled' | 'completed' | 'skipped';
 }
@@ -58,12 +72,22 @@ export interface WeekPlan {
   week: number;
   focus: string;
   topics: string[];
+  // Same index-correspondence as `topics` — the stable syllabus topic id for
+  // each entry, when it could be resolved. Consumers should match on this
+  // first and only fall back to matching `topics[i]` by name when undefined.
+  topicIds?: (string | undefined)[];
   goals: string[];
+  notes?: string; // user-editable personal notes for the week
   studyHours: number;
 }
 
 export interface StudyRoadmap {
   id: string;
+  subjectId: string;
+  subjectName: string;
+  topicTags?: string[];
+  startDate: string;   // "YYYY-MM-DD"
+  endDate: string;     // "YYYY-MM-DD" — mirrors examDate, exposed for Dashboard/Calendar consumers
   title: string;
   description: string;
   totalWeeks: number;
@@ -83,9 +107,88 @@ export interface StudyRoadmap {
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 /**
+ * Assigns the user's own topics to exactly `weeks` week-buckets — the roadmap
+ * always spans the full selected date range, never shrinks to fit the topic
+ * count. If there are at least as many topics as weeks, splits them into
+ * balanced contiguous chunks (e.g. 7 topics / 4 weeks -> [2,2,2,1]). If there
+ * are fewer topics than weeks, each topic gets its own week first, then the
+ * remaining weeks cycle back through the same topics again as spaced review —
+ * the same real topic recurring, never an invented one. This is the single
+ * source of truth for which topics appear in which week — the AI never
+ * chooses topics itself. Returns `true` in `isReview` for cycled-back weeks.
+ *
+ * Operates on `TopicDetail` objects (not plain name strings) so that a stable
+ * topicId — when the caller has one — travels through bucketing/cycling by
+ * position, never by re-matching name strings afterward. Re-matching by name
+ * would silently collapse two topics that happen to share the same name onto
+ * whichever one is found first.
+ */
+const scheduleTopicsAcrossWeeks = (
+  topics: TopicDetail[],
+  weeks: number,
+): { topics: TopicDetail[]; isReview: boolean }[] => {
+  const w = Math.max(1, weeks);
+  if (topics.length === 0) return Array.from({ length: w }, () => ({ topics: [], isReview: false }));
+
+  if (topics.length >= w) {
+    const base = Math.floor(topics.length / w);
+    let extra = topics.length % w;
+    const buckets: { topics: TopicDetail[]; isReview: boolean }[] = [];
+    let idx = 0;
+    for (let i = 0; i < w; i++) {
+      const size = base + (extra > 0 ? 1 : 0);
+      if (extra > 0) extra--;
+      buckets.push({ topics: topics.slice(idx, idx + size), isReview: false });
+      idx += size;
+    }
+    return buckets;
+  }
+
+  // Fewer topics than weeks: first pass covers each topic once, remaining
+  // weeks cycle back through the list for spaced review.
+  return Array.from({ length: w }, (_, i) => ({
+    topics: [topics[i % topics.length]],
+    isReview: i >= topics.length,
+  }));
+};
+
+/** Pairs each topicTags[i] with its matching topicDetails[i] by position — the
+ *  two arrays are always built together, in the same order, by the caller
+ *  (RoadmapGenerator.tsx), so this never needs to re-match by name. */
+const buildTopicRefs = (input: RoadmapInput): TopicDetail[] =>
+  (input.topicTags ?? []).map((name, i) => ({
+    name,
+    topicId: input.topicDetails?.[i]?.topicId,
+    description: input.topicDetails?.[i]?.description,
+  }));
+
+const buildTips = (input: RoadmapInput): string[] => {
+  const nd = input.neurodivergentSupport ? input.neurodivergentOptions : null;
+  return [
+    nd?.shorterSessions
+      ? 'Break every session into 25–30 min focused chunks with a clear start/stop signal'
+      : `Use ${input.sessionLengthMinutes}-min focused sessions with ${input.breakLengthMinutes}-min breaks`,
+    'Start with your hardest subject when your mind is freshest',
+    nd?.visualChecklist
+      ? 'Use a visual checklist — tick each topic as you complete it to build momentum'
+      : 'Make concise notes and mind-maps for quick recall',
+    nd?.flexibleCatchUp
+      ? 'If you miss a session, use the buffer slot at the end of the week — never skip ahead'
+      : 'Review previous topics regularly to strengthen retention',
+    'Sleep 7–8 hours — memory consolidates during sleep',
+    nd?.lowDistractionMode
+      ? 'Phone in another room, site blockers on, one tab open at a time'
+      : 'Put your phone face-down and away from your desk during sessions',
+    `Study on your planned days (${(input.availableStudyDays ?? [1, 2, 3, 4, 5, 6]).map(d => DAY_NAMES[d]).join(', ')}) at the same time each day to build habit`,
+  ];
+};
+
+/**
  * Compute concrete daily session blocks from the generated weekly plans.
  * Runs entirely client-side so dates are accurate and the AI output stays compact.
- * Generates up to 4 weeks of sessions to keep Firestore document size reasonable.
+ * Spans the full weeklyPlans range (which itself is capped at 26 weeks) — no
+ * separate artificial cap here, otherwise sessions stop early and leave most
+ * of the selected date range empty on the Calendar.
  */
 const buildSuggestedSessions = (
   weeklyPlans: WeekPlan[],
@@ -116,61 +219,54 @@ const buildSuggestedSessions = (
   const windowMinutes = endH * 60 + endM - (startH * 60 + startM);
   const sessionsPerDay = Math.max(1, Math.floor(windowMinutes / (effectiveSession + effectiveBreak)));
 
-  // Flatten topics across all weeks, assigning a subject to each
-  const allTopics: { topic: string; subject: string }[] = [];
-  for (const plan of weeklyPlans) {
-    const subjIdx = input.subjects.length > 0
-      ? (plan.week - 1) % input.subjects.length
-      : 0;
-    const subject = input.subjects[subjIdx] ?? 'Study';
-    for (const topic of plan.topics) {
-      allTopics.push({ topic, subject });
-    }
-  }
-
+  const subject = input.subjects[0] ?? 'Study';
   const sessions: TimetableBlock[] = [];
   const examDate = new Date(input.examDate);
+  const rangeStart = input.startDate ? new Date(input.startDate) : new Date();
 
-  // Find the next available study day from today
-  const current = new Date();
+  // Find the next available study day from the roadmap's start date (defaults to today)
+  const current = new Date(rangeStart);
   for (let i = 0; i < 7; i++) {
     if (availableStudyDays.includes(current.getDay())) break;
     current.setDate(current.getDate() + 1);
   }
 
-  // Cap at 4 weeks of sessions to keep data size manageable
-  const maxSessions = Math.min(
-    allTopics.length,
-    sessionsPerDay * availableStudyDays.length * 4,
-  );
-  let topicIdx = 0;
-
-  while (topicIdx < maxSessions && current < examDate) {
+  // Paced week-by-week so sessions span the FULL date range instead of
+  // packing all topics densely into the first few days and then stopping —
+  // each day's session(s) draw from that calendar week's own topic bucket,
+  // cycling within the week to fill every available slot that week. Weeks
+  // with no topics (buffer weeks) simply get no sessions.
+  while (current < examDate) {
     if (availableStudyDays.includes(current.getDay())) {
-      let slotStart = startH * 60 + startM;
-      for (let s = 0; s < sessionsPerDay && topicIdx < maxSessions; s++) {
-        const slotEnd = slotStart + effectiveSession;
-        if (slotEnd > endH * 60 + endM) break;
+      const daysSinceStart = Math.floor((current.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000));
+      const weekIndex = Math.min(Math.floor(daysSinceStart / 7), weeklyPlans.length - 1);
+      const weekTopics = weeklyPlans[weekIndex]?.topics ?? [];
 
-        const sh = Math.floor(slotStart / 60);
-        const sm = slotStart % 60;
-        const eh = Math.floor(slotEnd / 60);
-        const em = slotEnd % 60;
+      if (weekTopics.length > 0) {
+        let slotStart = startH * 60 + startM;
+        for (let s = 0; s < sessionsPerDay; s++) {
+          const slotEnd = slotStart + effectiveSession;
+          if (slotEnd > endH * 60 + endM) break;
 
-        const { topic, subject } = allTopics[topicIdx];
-        sessions.push({
-          date: current.toISOString().split('T')[0],
-          day: DAY_NAMES[current.getDay()],
-          startTime: `${String(sh).padStart(2, '0')}:${String(sm).padStart(2, '0')}`,
-          endTime: `${String(eh).padStart(2, '0')}:${String(em).padStart(2, '0')}`,
-          duration: effectiveSession,
-          subject,
-          topic,
-          status: 'scheduled',
-        });
+          const sh = Math.floor(slotStart / 60);
+          const sm = slotStart % 60;
+          const eh = Math.floor(slotEnd / 60);
+          const em = slotEnd % 60;
 
-        topicIdx++;
-        slotStart = slotEnd + effectiveBreak;
+          sessions.push({
+            date: current.toISOString().split('T')[0],
+            day: DAY_NAMES[current.getDay()],
+            startTime: `${String(sh).padStart(2, '0')}:${String(sm).padStart(2, '0')}`,
+            endTime: `${String(eh).padStart(2, '0')}:${String(em).padStart(2, '0')}`,
+            duration: effectiveSession,
+            subject,
+            subjectId: input.subjectId,
+            topic: weekTopics[s % weekTopics.length],
+            status: 'scheduled',
+          });
+
+          slotStart = slotEnd + effectiveBreak;
+        }
       }
     }
     current.setDate(current.getDate() + 1);
@@ -180,22 +276,29 @@ const buildSuggestedSessions = (
 };
 
 export const generateStudyRoadmap = async (input: RoadmapInput): Promise<StudyRoadmap> => {
+  if (!input.topicTags?.length) {
+    throw new Error('NO_TOPICS: add topics to this subject before generating a roadmap');
+  }
+
   if (!grokClient) {
     return generateDemoRoadmap(input);
   }
 
+  // Decide which topics belong in which week ourselves — the AI only writes
+  // the framing (focus/goals/tips) around a syllabus it never gets to choose.
+  // The roadmap always spans the full selected date range (start -> exam),
+  // never shrinks to however many topics exist — see scheduleTopicsAcrossWeeks.
+  const examDate = new Date(input.examDate);
+  const startDate = input.startDate ? new Date(input.startDate) : new Date();
+  const daysInRange = Math.ceil((examDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+  const calendarWeeks = Math.max(1, Math.min(Math.ceil(daysInRange / 7), 26));
+  const contentWeeks = input.includeBufferDays ? Math.max(1, calendarWeeks - 1) : calendarWeeks;
+  const topicBuckets = scheduleTopicsAcrossWeeks(buildTopicRefs(input), contentWeeks);
+  const totalWeeks = calendarWeeks;
+  const subject = input.subjects[0] ?? 'Study';
+  const weeklyHours = (input.availableStudyDays?.length ?? 6) * input.studyHoursPerDay;
+
   try {
-    const examDate = new Date(input.examDate);
-    const today = new Date();
-    const daysUntilExam = Math.ceil((examDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-    const weeksUntilExam = Math.max(1, Math.floor(daysUntilExam / 7));
-
-    // Reserve last week as buffer if requested
-    const totalWeeks = Math.max(
-      1,
-      Math.min(input.includeBufferDays ? weeksUntilExam - 1 : weeksUntilExam, 12),
-    );
-
     const dayLabels = (input.availableStudyDays ?? [1, 2, 3, 4, 5, 6])
       .map(d => DAY_NAMES[d])
       .join(', ');
@@ -204,8 +307,6 @@ export const generateStudyRoadmap = async (input: RoadmapInput): Promise<StudyRo
       input.neurodivergentSupport && input.neurodivergentOptions?.shorterSessions
         ? Math.min(input.sessionLengthMinutes, 30)
         : input.sessionLengthMinutes;
-
-    const weeklyHours = (input.availableStudyDays?.length ?? 6) * input.studyHoursPerDay;
 
     const urgencyNote: Record<string, string> = {
       low:    'Relaxed pacing — prioritise thorough understanding over speed.',
@@ -221,22 +322,29 @@ export const generateStudyRoadmap = async (input: RoadmapInput): Promise<StudyRo
 
     const ndBlock = input.neurodivergentSupport
       ? `\n**Neurodivergent Adaptations (MUST APPLY):**
-- Split each topic into sub-steps of maximum 25–30 minutes.
 - Write goals as single, unambiguous, completable checkboxes.
 - Include one explicit "catch-up slot" per week in the goals.
 - All tips must assume a low-distraction environment.`
       : '';
 
+    const describeTopic = (t: TopicDetail) => (t.description ? `${t.name} (${t.description})` : t.name);
+
+    const weekTopicLines = topicBuckets
+      .map((b, i) => `Week ${i + 1}${b.isReview ? ' (SPACED REVIEW — already covered, write practice/retention goals, not first-time-learning goals)' : ''}: ${b.topics.map(describeTopic).join(' | ')}`)
+      .join('\n');
+
     const prompt = `
-You are an expert educational consultant. Create a DETAILED, SPECIFIC study roadmap.
+You are an expert educational consultant. Your job is to SCHEDULE the student's own syllabus into a week-by-week plan — you do not choose, invent, rename, or drop any topic.
 
 **Student Profile:**
-- Subjects: ${input.subjects.join(', ')}
-- Exam Date: ${input.examDate} (${totalWeeks} study weeks from today)
+- Subject: ${subject}
+- Exam Date: ${input.examDate}
 - Current Level: ${input.currentLevel}
 - Daily Study Hours: ${input.studyHoursPerDay} h/day
-- Weak Areas: ${input.weakAreas?.join(', ') || 'Not specified'}
 - Goals: ${input.goals || 'Excel in exams'}
+
+**SYLLABUS — the only topics that exist, already assigned to weeks (do not add, remove, rename, split, or merge any):**
+${weekTopicLines}
 
 **Schedule Constraints:**
 - Available Days: ${dayLabels}
@@ -246,37 +354,25 @@ You are an expert educational consultant. Create a DETAILED, SPECIFIC study road
 - Effective Weekly Hours: ${weeklyHours} h
 - Exam Urgency: ${input.examUrgency} — ${urgencyNote[input.examUrgency]}
 - Session Focus Style: ${focusNote[input.focusPreference]}
-${input.includeBufferDays ? '- Last Week Is Buffer: DO NOT fill week ' + (totalWeeks + 1) + ' with new topics — the calendar page will add a buffer week automatically.' : ''}
 ${ndBlock}
 
 **CRITICAL INSTRUCTIONS:**
-1. Generate exactly ${totalWeeks} weeks (Week 1 … Week ${totalWeeks}).
-2. Every topic must be SPECIFIC and ACTIONABLE — never generic.
-3. Focus on weak areas: ${input.weakAreas?.length ? input.weakAreas.join(', ') : 'cover all fundamentals'}.
+1. Produce exactly ${topicBuckets.length} week entries, one per week listed above, in order.
+2. Each week's "topics" array MUST be exactly the topic list given for that week above, verbatim, same order, nothing added or removed.
+3. Write a short "focus" theme and 2-3 actionable "goals" for each week that reference only its own topics — for SPACED REVIEW weeks, write practice/retention-oriented goals instead of first-time-learning goals.
 4. Set studyHours per week to exactly ${weeklyHours}.
-
-**FORBIDDEN WORDS:** "Mock test", "Practice questions", "Sample papers", "Revision", "Review", "Test preparation"
-
-**TOPIC FORMAT:**
-✓ GOOD: "Learn HTML semantic tags (header, nav, article, section)"
-✗ BAD: "Practice HTML", "Review CSS", "Mock test"
-
-**WEEK STRUCTURE (urgency = ${input.examUrgency}):**
-${input.examUrgency === 'high'
-  ? `Weeks 1–${Math.ceil(totalWeeks * 0.5)}: Intensive concept acquisition\nWeeks ${Math.ceil(totalWeeks * 0.5) + 1}–${totalWeeks}: High-yield applied practice`
-  : `Weeks 1–${Math.ceil(totalWeeks * 0.7)}: Core concept learning\nWeeks ${Math.ceil(totalWeeks * 0.7) + 1}–${totalWeeks}: Applied practice and problem solving`}
 
 **RETURN ONLY VALID JSON — no markdown, no comments:**
 {
-  "title": "Study Roadmap: ${input.subjects.join(' & ')}",
+  "title": "Study Roadmap: ${subject}",
   "description": "${totalWeeks}-week plan until ${input.examDate}, ${weeklyHours} h/week on ${dayLabels}",
-  "totalWeeks": ${totalWeeks},
+  "totalWeeks": ${topicBuckets.length},
   "weeklyPlans": [
     {
       "week": 1,
-      "focus": "${input.subjects[0]} — ${input.weakAreas?.[0] ?? 'Fundamentals'}",
-      "topics": ["Learn [specific concept 1]", "Understand [specific concept 2]", "Master [specific skill 3]", "Apply [specific technique 4]", "Build [specific mini-project 5]"],
-      "goals": ["Finish all 5 topics", "Solve 10 targeted exercises"],
+      "focus": "${subject} — ${topicBuckets[0].topics[0].name}",
+      "topics": ${JSON.stringify(topicBuckets[0].topics.map(t => t.name))},
+      "goals": ["Cover all of this week's topics", "Solve targeted exercises for each"],
       "studyHours": ${weeklyHours}
     }
   ],
@@ -284,7 +380,6 @@ ${input.examUrgency === 'high'
     "Use active recall — close your notes and write down what you remember",
     "Study in your ${input.preferredStartTime}–${input.preferredEndTime} window every ${dayLabels.split(', ')[0]}",
     "After each ${effectiveSession}-minute session take a ${input.breakLengthMinutes}-minute break",
-    "Prioritise ${input.weakAreas?.[0] ?? input.subjects[0]} in the first half of each week",
     "Track completed topics with a checkbox list for daily momentum"
   ]
 }
@@ -308,11 +403,54 @@ ${input.examUrgency === 'high'
       .trim();
 
     const roadmapData = JSON.parse(cleaned);
-    const suggestedSessions = buildSuggestedSessions(roadmapData.weeklyPlans, input);
+
+    // Enforcement: the AI may only theme/phrase around the topics we assigned —
+    // topics per week are always overwritten with our own buckets, never trusted
+    // from the AI's output, so nothing invented or dropped can slip through.
+    const weeklyPlans: WeekPlan[] = topicBuckets.map((bucket, i) => {
+      const aiWeek = roadmapData?.weeklyPlans?.[i];
+      const topicNames = bucket.topics.map(t => t.name);
+      return {
+        week: i + 1,
+        focus: aiWeek?.focus || `${subject} — ${bucket.isReview ? 'Review: ' : ''}${topicNames[0]}`,
+        topics: topicNames,
+        topicIds: bucket.topics.map(t => t.topicId),
+        goals: Array.isArray(aiWeek?.goals) && aiWeek.goals.length ? aiWeek.goals : [`Cover: ${topicNames.join(', ')}`],
+        studyHours: typeof aiWeek?.studyHours === 'number' ? aiWeek.studyHours : weeklyHours,
+      };
+    });
+
+    // Buffer week: reserves the last week of the selected range for pure
+    // catch-up/consolidation — no new or repeated topics, so it never
+    // conflicts with "only ever the user's real topics."
+    if (input.includeBufferDays && calendarWeeks > contentWeeks) {
+      weeklyPlans.push({
+        week: calendarWeeks,
+        focus: 'Buffer & Consolidation Week',
+        topics: [],
+        topicIds: [],
+        goals: ['Revisit any incomplete topics from previous weeks', 'Final confidence check before the exam'],
+        studyHours: Math.floor(weeklyHours * 0.5),
+      });
+    }
+
+    const suggestedSessions = buildSuggestedSessions(weeklyPlans, input);
 
     return {
       id: `roadmap-${Date.now()}`,
-      ...roadmapData,
+      subjectId: input.subjectId,
+      subjectName: subject,
+      topicTags: input.topicTags,
+      startDate: input.startDate ?? new Date().toISOString().split('T')[0],
+      endDate: input.examDate,
+      title: roadmapData?.title || `Study Roadmap: ${subject}`,
+      // Always built from our own authoritative totalWeeks — never trust the AI's
+      // own description text, which can state a stale/wrong week count even when
+      // topics/weeklyPlans themselves are correct.
+      description: `${totalWeeks}-week plan until ${input.examDate}, ${weeklyHours} h/week on ${dayLabels}`,
+      totalWeeks,
+      weeklyPlans,
+      tips: Array.isArray(roadmapData?.tips) && roadmapData.tips.length ? roadmapData.tips : buildTips(input),
       suggestedSessions,
       createdAt: new Date().toISOString(),
     };
@@ -329,106 +467,62 @@ ${input.examUrgency === 'high'
 };
 
 const generateDemoRoadmap = (input: RoadmapInput): StudyRoadmap => {
-  const today = new Date();
-  const examDate = new Date(input.examDate);
-  const weeksUntilExam = Math.ceil(
-    (examDate.getTime() - today.getTime()) / (7 * 24 * 60 * 60 * 1000),
-  );
-  const rawWeeks = Math.min(weeksUntilExam, 12);
-  const studyWeeks = input.includeBufferDays ? Math.max(1, rawWeeks - 1) : rawWeeks;
-  const weeklyHours = (input.availableStudyDays?.length ?? 6) * input.studyHoursPerDay;
-
-  const weeklyPlans: WeekPlan[] = [];
-
-  for (let i = 1; i <= studyWeeks; i++) {
-    const early = i <= studyWeeks * 0.6;
-    const mid   = i > studyWeeks * 0.6 && i <= studyWeeks * 0.9;
-    const subject  = input.subjects[(i - 1) % input.subjects.length];
-    const weakArea = input.weakAreas?.[(i - 1) % (input.weakAreas.length || 1)];
-
-    weeklyPlans.push({
-      week: i,
-      focus: early
-        ? `${subject} — ${weakArea ?? 'Fundamentals'}`
-        : mid
-        ? `${subject} — Advanced ${weakArea ?? 'Concepts'}`
-        : `${subject} — Final Preparation`,
-      topics: early
-        ? [
-            `Understand ${weakArea ?? subject} basic concepts`,
-            `Learn ${weakArea ?? subject} fundamental principles`,
-            `Master ${weakArea ?? subject} core techniques`,
-            `Practice ${weakArea ?? subject} basic exercises`,
-            `Build simple ${subject} examples`,
-          ]
-        : mid
-        ? [
-            `Solve complex ${weakArea ?? subject} problems`,
-            `Apply ${weakArea ?? subject} in real scenarios`,
-            `Optimise ${weakArea ?? subject} solutions`,
-            `Build advanced ${subject} projects`,
-            `Debug ${weakArea ?? subject} edge cases`,
-          ]
-        : [
-            `Speed drills for ${weakArea ?? subject}`,
-            `Timed problem solving — ${subject}`,
-            `Create ${subject} reference notes`,
-            `Fix ${weakArea ?? subject} remaining weak points`,
-            `Final ${subject} confidence building`,
-          ],
-      goals: [
-        `Complete all ${weakArea ?? subject} topics`,
-        `Solve 15+ exercises`,
-        `Build 1 mini project`,
-      ],
-      studyHours: weeklyHours,
-    });
+  if (!input.topicTags?.length) {
+    throw new Error('NO_TOPICS: add topics to this subject before generating a roadmap');
   }
 
-  // Explicit buffer week appended when requested
-  if (input.includeBufferDays && rawWeeks > 1) {
+  const examDate = new Date(input.examDate);
+  const startDate = input.startDate ? new Date(input.startDate) : new Date();
+  const daysInRange = Math.ceil((examDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+  const calendarWeeks = Math.max(1, Math.min(Math.ceil(daysInRange / 7), 26));
+  const contentWeeks = input.includeBufferDays ? Math.max(1, calendarWeeks - 1) : calendarWeeks;
+  const weeklyHours = (input.availableStudyDays?.length ?? 6) * input.studyHoursPerDay;
+  const subject = input.subjects[0] ?? 'Study';
+
+  const topicBuckets = scheduleTopicsAcrossWeeks(buildTopicRefs(input), contentWeeks);
+
+  const weeklyPlans: WeekPlan[] = topicBuckets.map((bucket, idx) => {
+    const week = idx + 1;
+    const topicNames = bucket.topics.map(t => t.name);
+    const label = bucket.isReview ? 'Review & practice' : topicNames[0];
+    return {
+      week,
+      focus: `${subject} — ${label}${topicNames.length > 1 ? ` +${topicNames.length - 1} more` : ''}`,
+      topics: topicNames,
+      topicIds: bucket.topics.map(t => t.topicId),
+      goals: bucket.isReview
+        ? [`Revisit and practice: ${topicNames.join(', ')}`, 'Solve harder problems to test retention']
+        : [`Cover all of this week's topics: ${topicNames.join(', ')}`, 'Solve targeted exercises for each'],
+      studyHours: weeklyHours,
+    };
+  });
+
+  // Explicit buffer week appended when requested — pure catch-up/consolidation,
+  // no new or repeated topics, so it never conflicts with "only real topics."
+  if (input.includeBufferDays && calendarWeeks > contentWeeks) {
     weeklyPlans.push({
-      week: studyWeeks + 1,
+      week: calendarWeeks,
       focus: 'Buffer & Consolidation Week',
-      topics: [
-        'Revisit any incomplete topics from previous weeks',
-        'Strengthen the weakest areas identified during study',
-        'Consolidate notes and key formula sheets',
-        'Rest and mental preparation before exam day',
-      ],
-      goals: ['Clear all pending topics', 'Final confidence check'],
+      topics: [],
+      topicIds: [],
+      goals: ['Revisit any incomplete topics from previous weeks', 'Final confidence check before the exam'],
       studyHours: Math.floor(weeklyHours * 0.5),
     });
   }
 
-  const nd = input.neurodivergentSupport ? input.neurodivergentOptions : null;
-
-  const tips = [
-    nd?.shorterSessions
-      ? 'Break every session into 25–30 min focused chunks with a clear start/stop signal'
-      : `Use ${input.sessionLengthMinutes}-min focused sessions with ${input.breakLengthMinutes}-min breaks`,
-    'Start with your hardest subject when your mind is freshest',
-    nd?.visualChecklist
-      ? 'Use a visual checklist — tick each topic as you complete it to build momentum'
-      : 'Make concise notes and mind-maps for quick recall',
-    nd?.flexibleCatchUp
-      ? 'If you miss a session, use the buffer slot at the end of the week — never skip ahead'
-      : 'Review previous topics regularly to strengthen retention',
-    'Sleep 7–8 hours — memory consolidates during sleep',
-    nd?.lowDistractionMode
-      ? 'Phone in another room, site blockers on, one tab open at a time'
-      : 'Put your phone face-down and away from your desk during sessions',
-    `Study on your planned days (${(input.availableStudyDays ?? [1, 2, 3, 4, 5, 6]).map(d => DAY_NAMES[d]).join(', ')}) at the same time each day to build habit`,
-  ];
-
+  const tips = buildTips(input);
   const suggestedSessions = buildSuggestedSessions(weeklyPlans, input);
-  const displayWeeks = input.includeBufferDays && rawWeeks > 1 ? studyWeeks + 1 : studyWeeks;
 
   return {
     id: `roadmap-${Date.now()}`,
-    title: `${displayWeeks}-Week Study Roadmap`,
-    description: `A personalised ${displayWeeks}-week plan covering ${input.subjects.join(', ')} — ${input.studyHoursPerDay} h/day on ${(input.availableStudyDays ?? [1, 2, 3, 4, 5, 6]).map(d => DAY_NAMES[d]).join(', ')}.`,
-    totalWeeks: displayWeeks,
+    subjectId: input.subjectId,
+    subjectName: input.subjects[0] ?? '',
+    topicTags: input.topicTags,
+    startDate: input.startDate ?? new Date().toISOString().split('T')[0],
+    endDate: input.examDate,
+    title: `${calendarWeeks}-Week Study Roadmap`,
+    description: `A personalised ${calendarWeeks}-week plan covering ${input.subjects.join(', ')} — ${input.studyHoursPerDay} h/day on ${(input.availableStudyDays ?? [1, 2, 3, 4, 5, 6]).map(d => DAY_NAMES[d]).join(', ')}.`,
+    totalWeeks: calendarWeeks,
     weeklyPlans,
     tips,
     suggestedSessions,

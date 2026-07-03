@@ -21,7 +21,7 @@ const STEPS = [
     details: [
       'Go to My Subjects from the navigation bar.',
       'Click "Add Subject" and enter a subject name (e.g. Mathematics, Biology).',
-      'Inside each subject, add chapters and then topics within each chapter.',
+      'Inside each subject, add topics directly, with a short description of what each one covers.',
       'Mark topics as Pending, In Progress, or Completed as you go.',
       'Add an exam date to any subject — this helps the AI schedule urgently.',
     ],

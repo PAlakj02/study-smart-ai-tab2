@@ -1,12 +1,22 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { useStudyData } from "@/context/StudyDataContext";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import {
   Calendar,
   Clock,
@@ -21,6 +31,16 @@ import {
   BookMarked,
   Sparkles,
   Timer,
+  ChevronDown,
+  CalendarDays,
+  CalendarClock,
+  Hourglass,
+  ListChecks,
+  Lightbulb,
+  ClipboardList,
+  X,
+  Pencil,
+  StickyNote,
 } from "lucide-react";
 
 // "16:00" → "4:00 PM"
@@ -30,12 +50,104 @@ const fmt12h = (t: string): string => {
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${period}`;
 };
 
-const todayDateStr = () => new Date().toISOString().split('T')[0]; // "YYYY-MM-DD"
+// Local calendar date, NOT toISOString() — that converts to UTC first, which
+// silently shows "yesterday" for part of the day in positive-UTC-offset
+// timezones (e.g. IST) and "tomorrow" in negative ones. Matches the same safe
+// pattern already used by StudyCalendar.tsx's toDateStr().
+const todayDateStr = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
 
 const Dashboard = () => {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
-  const { subjects, sessions, totalStudyHours, roadmap, loading, completeStudySession, markSessionMissed, rescheduleSession, currentStreak, bestStreak } = useStudyData();
+  const {
+    subjects, sessions, totalStudyHours, roadmap, roadmapsBySubjectId, loading,
+    completeStudySession, markSessionMissed, rescheduleSession, currentStreak, bestStreak,
+    myGoals, addGoal, toggleGoal, removeGoal,
+    todayChecklist: persistedChecklist, setTodayChecklistItems, toggleChecklistItem,
+    updateRoadmapWeek,
+  } = useStudyData();
+  const [searchParams] = useSearchParams();
+  const focusSubjectId = searchParams.get('subjectId');
+  const focusDate = searchParams.get('date');
+
+  // ── AI Roadmap panel: one subject at a time, switchable ───────────────────
+  const [selectedPanelSubjectId, setSelectedPanelSubjectId] = React.useState<string | null>(null);
+  const [showFullPlan, setShowFullPlan] = React.useState(false);
+
+  // ── Edit Week dialog — lets a user personalize an already-generated week ──
+  const [editWeekIndex, setEditWeekIndex] = React.useState<number | null>(null);
+  const [editFocus, setEditFocus] = React.useState('');
+  const [editTopics, setEditTopics] = React.useState<{ name: string; topicId?: string }[]>([]);
+  const [editGoalsList, setEditGoalsList] = React.useState<string[]>([]);
+  const [editWeekNotes, setEditWeekNotes] = React.useState('');
+  const [newEditTopicText, setNewEditTopicText] = React.useState('');
+  const [newEditGoalText, setNewEditGoalText] = React.useState('');
+
+  const openEditWeek = (weekIndex: number) => {
+    const week = panelRoadmap?.weeklyPlans[weekIndex];
+    if (!week) return;
+    setEditWeekIndex(weekIndex);
+    setEditFocus(week.focus);
+    setEditTopics(week.topics.map((name, i) => ({ name, topicId: week.topicIds?.[i] })));
+    setEditGoalsList([...week.goals]);
+    setEditWeekNotes(week.notes ?? '');
+    setNewEditTopicText('');
+    setNewEditGoalText('');
+  };
+
+  const handleSaveWeekEdit = async () => {
+    if (editWeekIndex === null || !panelSubject) return;
+    await updateRoadmapWeek(panelSubject.id, editWeekIndex, {
+      focus: editFocus.trim() || panelRoadmap?.weeklyPlans[editWeekIndex]?.focus,
+      topics: editTopics.map(t => t.name),
+      topicIds: editTopics.map(t => t.topicId),
+      goals: editGoalsList,
+      notes: editWeekNotes.trim() || undefined,
+    });
+    setEditWeekIndex(null);
+  };
+
+  // Deep link (e.g. from Calendar's "View in Dashboard") always wins
+  React.useEffect(() => {
+    if (focusSubjectId && subjects.some(s => s.id === focusSubjectId)) {
+      setSelectedPanelSubjectId(focusSubjectId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSubjectId, subjects.length]);
+
+  // Otherwise default to the first subject that has a roadmap, else the first subject
+  React.useEffect(() => {
+    setSelectedPanelSubjectId(prev => {
+      if (prev && subjects.some(s => s.id === prev)) return prev;
+      return subjects.find(s => roadmapsBySubjectId[s.id])?.id ?? subjects[0]?.id ?? null;
+    });
+  }, [subjects, roadmapsBySubjectId]);
+
+  const panelSubject = subjects.find(s => s.id === selectedPanelSubjectId) ?? null;
+  const panelRoadmap = panelSubject ? roadmapsBySubjectId[panelSubject.id] : undefined;
+  const panelTopics = panelSubject ? panelSubject.chapters.flatMap(c => c.topics) : [];
+  const panelDayFocusSessions = panelSubject && focusDate
+    ? sessions.filter(s => s.subjectId === panelSubject.id && s.date.substring(0, 10) === focusDate)
+    : [];
+  const panelExamDate = panelSubject?.examDate ?? panelRoadmap?.endDate;
+  const panelDaysLeft = panelExamDate
+    ? Math.ceil((new Date(panelExamDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+    : null;
+  const panelCurrentWeekIndex = panelRoadmap
+    ? Math.min(
+        Math.max(0, Math.floor((Date.now() - new Date(panelRoadmap.createdAt).getTime()) / (7 * 24 * 60 * 60 * 1000))),
+        panelRoadmap.weeklyPlans.length - 1,
+      )
+    : 0;
+  const panelRemainingHours = panelRoadmap
+    ? panelRoadmap.weeklyPlans.slice(panelCurrentWeekIndex).reduce((sum, w) => sum + w.studyHours, 0)
+    : 0;
 
   // ── Real scheduled sessions for today (from roadmap timetable) ────────────
   const todayStr = todayDateStr();
@@ -46,6 +158,112 @@ const Dashboard = () => {
         .sort((a, b) => (a.startTime ?? '').localeCompare(b.startTime ?? '')),
     [sessions, todayStr],
   );
+
+  // ── Group today's sessions by subject+topic into one focus card per group,
+  //    instead of one card per 60-min session block ─────────────────────────
+  const todayFocusGroups = React.useMemo(() => {
+    const map = new Map<string, {
+      key: string;
+      subjectId: string;
+      subjectName: string;
+      topic: string;
+      color: string;
+      groupSessions: typeof realTodaySessions;
+      totalMinutes: number;
+    }>();
+    for (const s of realTodaySessions) {
+      const key = `${s.subjectId}::${s.topic ?? ''}`;
+      if (!map.has(key)) {
+        const subj = subjects.find(sub => sub.id === s.subjectId);
+        map.set(key, {
+          key,
+          subjectId: s.subjectId,
+          subjectName: s.subjectName ?? subj?.name ?? 'Study',
+          topic: s.topic ?? 'Study session',
+          color: subj?.color ?? 'bg-primary',
+          groupSessions: [],
+          totalMinutes: 0,
+        });
+      }
+      const g = map.get(key)!;
+      g.groupSessions.push(s);
+      g.totalMinutes += s.duration;
+    }
+    return Array.from(map.values());
+  }, [realTodaySessions, subjects]);
+
+  const [expandedFocusGroups, setExpandedFocusGroups] = React.useState<Record<string, boolean>>({});
+
+  // ── AI-generated Today's Checklist — canned study activities for today's
+  //    real topics (falls back to the roadmap panel's current-week topics).
+  //    Persisted per-day in context: pre-filled once when the day starts,
+  //    checked state survives refresh, and a fresh list replaces it the next
+  //    study day (see the sync effect below). ────────────────────────────────
+  const computedChecklistItems = React.useMemo(() => {
+    const topics = todayFocusGroups.length > 0
+      ? todayFocusGroups.map(g => g.topic)
+      : (panelRoadmap?.weeklyPlans[panelCurrentWeekIndex]?.topics ?? []);
+    const activityTemplates = (t: string) => [
+      `Read notes on ${t}`,
+      `Watch a lecture/tutorial on ${t}`,
+      `Solve practice questions on ${t}`,
+    ];
+    return topics.slice(0, 2).flatMap(activityTemplates).map((text, i) => ({ id: `check-${i}`, text, completed: false }));
+  }, [todayFocusGroups, panelRoadmap, panelCurrentWeekIndex]);
+
+  // Pre-fill/replace the persisted checklist exactly once when the stored
+  // date no longer matches today — i.e. at the start of a new study day.
+  React.useEffect(() => {
+    if (loading) return;
+    if (persistedChecklist?.date === todayStr) return;
+    setTodayChecklistItems(todayStr, computedChecklistItems);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, persistedChecklist?.date, todayStr]);
+
+  const todayChecklist = persistedChecklist?.date === todayStr ? persistedChecklist.items : [];
+
+  // ── My Goals — persistent personal checklist ───────────────────────────────
+  const [newGoalText, setNewGoalText] = React.useState('');
+
+  // ── This Week progress — compact, per subject with a roadmap ───────────────
+  const thisWeekBySubject = React.useMemo(() => {
+    return subjects
+      .map(subject => {
+        const rm = roadmapsBySubjectId[subject.id];
+        if (!rm) return null;
+        const weekIdx = Math.min(
+          Math.max(0, Math.floor((Date.now() - new Date(rm.createdAt).getTime()) / (7 * 24 * 60 * 60 * 1000))),
+          rm.weeklyPlans.length - 1,
+        );
+        const week = rm.weeklyPlans[weekIdx];
+        if (!week) return null;
+        const subjectTopics = subject.chapters.flatMap(c => c.topics);
+        // Prefer matching by stable topicId; only fall back to name matching
+        // when an id wasn't resolvable (e.g. roadmaps saved before this field existed).
+        const doneCount = week.topics.filter((t, i) => {
+          const topicId = week.topicIds?.[i];
+          const matched = topicId
+            ? subjectTopics.find(st => st.id === topicId)
+            : subjectTopics.find(st => st.name === t);
+          return matched?.status === 'completed';
+        }).length;
+        return { subjectId: subject.id, subjectName: subject.name, color: subject.color, week, weekIdx, doneCount };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+  }, [subjects, roadmapsBySubjectId]);
+
+  // ── AI Tip / Daily Motivation — reuses roadmap tips already generated ──────
+  const FALLBACK_TIPS = [
+    'Small consistent sessions beat rare marathon ones — show up today.',
+    'Active recall beats re-reading — quiz yourself before checking notes.',
+    'Take a real break every session — your brain consolidates learning during rest.',
+  ];
+  const dailyTip = React.useMemo(() => {
+    const pool = panelRoadmap?.tips?.length ? panelRoadmap.tips : FALLBACK_TIPS;
+    const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / (24 * 60 * 60 * 1000));
+    return pool[dayOfYear % pool.length];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelRoadmap]);
 
   // ── Derived sessions (fallback) when no roadmap timetable sessions today ──
   const derivedSessions = React.useMemo(() => {
@@ -222,57 +440,8 @@ const Dashboard = () => {
               ))}
             </div>
 
-            {/* AI Roadmap Banner */}
-            {roadmap && subjects.length > 0 ? (
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-                <Card className="p-6 bg-gradient-to-r from-primary/5 to-secondary/5 border-primary/20">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className="h-12 w-12 rounded-full gradient-primary flex items-center justify-center">
-                        <Sparkles className="h-6 w-6 text-white" />
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-semibold">{roadmap.title}</h3>
-                        <p className="text-sm text-muted-foreground">{roadmap.description}</p>
-                      </div>
-                    </div>
-                    <Button variant="outline" size="sm" onClick={() => navigate('/roadmap')}>Update</Button>
-                  </div>
-                  <div className="grid md:grid-cols-3 gap-4 mb-4">
-                    <div className="p-3 bg-background/50 rounded-lg">
-                      <div className="text-sm text-muted-foreground">Total Weeks</div>
-                      <div className="text-2xl font-bold text-primary">{roadmap.totalWeeks}</div>
-                    </div>
-                    <div className="p-3 bg-background/50 rounded-lg">
-                      <div className="text-sm text-muted-foreground">Current Week</div>
-                      <div className="text-2xl font-bold text-success">
-                        Week {Math.min(Math.ceil((Date.now() - new Date(roadmap.createdAt).getTime()) / (7 * 24 * 60 * 60 * 1000)), roadmap.totalWeeks)}
-                      </div>
-                    </div>
-                    <div className="p-3 bg-background/50 rounded-lg">
-                      <div className="text-sm text-muted-foreground">Study Tips</div>
-                      <div className="text-2xl font-bold">{roadmap.tips.length}</div>
-                    </div>
-                  </div>
-                  {roadmap.weeklyPlans[0] && (
-                    <div>
-                      <h4 className="font-semibold mb-2">This Week's Focus</h4>
-                      <div className="p-3 bg-background rounded-lg">
-                        <p className="font-medium text-primary mb-2">{roadmap.weeklyPlans[0].focus}</p>
-                        <div className="space-y-1">
-                          {roadmap.weeklyPlans[0].topics.slice(0, 3).map((t, i) => (
-                            <div key={i} className="flex items-center gap-2 text-sm">
-                              <Target className="h-3 w-3 text-muted-foreground" />
-                              <span>{t}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </Card>
-              </motion.div>
-            ) : (
+            {/* First-time onboarding banner — shown until the user has at least one subject */}
+            {subjects.length === 0 && (
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
                 <Card className="p-8 bg-gradient-to-r from-primary/5 to-secondary/5 border-primary/20">
                   <div className="text-center">
@@ -292,16 +461,239 @@ const Dashboard = () => {
               </motion.div>
             )}
 
-            {/* Dashboard Grid */}
-            <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Balanced two-column planner layout: sticky AI Roadmap panel (~65%) + Today's Study Plan (~35%) */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 items-start">
 
-              {/* Today's Schedule */}
-              <motion.div variants={item} className="lg:col-span-2">
-                <Card className="p-6 h-full">
+            {/* AI Roadmap — sticky, single-subject, planner-focused panel */}
+            {subjects.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="lg:col-span-2 lg:sticky lg:top-24"
+              >
+                <Card
+                  className={`p-6 bg-gradient-to-r from-primary/5 to-secondary/5 border-primary/20 ${
+                    focusSubjectId === panelSubject?.id ? 'ring-2 ring-primary' : ''
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="h-4 w-4 text-primary" />
+                      <h3 className="font-semibold">AI Roadmap</h3>
+                    </div>
+                  </div>
+
+                  {/* Subject switcher */}
+                  <select
+                    className="w-full mt-2 mb-3 px-2 py-1.5 text-sm bg-background border border-input rounded-md"
+                    value={panelSubject?.id ?? ''}
+                    onChange={e => setSelectedPanelSubjectId(e.target.value)}
+                  >
+                    {subjects.map(s => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+
+                  {panelSubject && (
+                    <>
+                      {/* Progress — always visible */}
+                      <div className="flex items-center gap-2 mb-4">
+                        <Progress value={panelSubject.progress} className="h-1.5 flex-1" />
+                        <span className="text-xs text-muted-foreground flex-shrink-0">
+                          {panelSubject.completedTopics}/{panelSubject.totalTopics} topics · {panelSubject.progress}%
+                        </span>
+                      </div>
+
+                      {panelTopics.length === 0 ? (
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-2">
+                            Add topics for {panelSubject.name} before generating a roadmap.
+                          </p>
+                          <Button size="sm" variant="outline" className="w-full" onClick={() => navigate('/subjects')}>
+                            <Plus className="h-3.5 w-3.5 mr-1.5" />
+                            Add topics
+                          </Button>
+                        </div>
+                      ) : !panelRoadmap ? (
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-2">No AI roadmap yet for {panelSubject.name}</p>
+                          <Button size="sm" variant="outline" className="w-full" onClick={() => navigate(`/roadmap?subjectId=${panelSubject.id}`)}>
+                            <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                            Generate roadmap
+                          </Button>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="text-sm text-muted-foreground mb-4">{panelRoadmap.description}</p>
+
+                          {/* Dates + duration */}
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 md:gap-3 text-center mb-4">
+                            <div className="p-2.5 bg-background/50 rounded-lg">
+                              <div className="text-[10px] text-muted-foreground flex items-center justify-center gap-1"><CalendarDays className="h-3 w-3" />Start</div>
+                              <div className="text-sm font-semibold mt-0.5">{panelRoadmap.startDate}</div>
+                            </div>
+                            <div className="p-2.5 bg-destructive/10 border border-destructive/20 rounded-lg">
+                              <div className="text-[10px] text-destructive flex items-center justify-center gap-1"><CalendarClock className="h-3 w-3" />Exam</div>
+                              <div className="text-sm font-semibold text-destructive mt-0.5">{panelExamDate ?? '—'}</div>
+                            </div>
+                            <div className="p-2.5 bg-background/50 rounded-lg">
+                              <div className="text-[10px] text-muted-foreground flex items-center justify-center gap-1"><Calendar className="h-3 w-3" />End</div>
+                              <div className="text-sm font-semibold mt-0.5">{panelRoadmap.endDate}</div>
+                            </div>
+                            <div className="p-2.5 bg-background/50 rounded-lg">
+                              <div className="text-[10px] text-muted-foreground">Duration</div>
+                              <div className="text-sm font-semibold mt-0.5">{panelRoadmap.totalWeeks}w</div>
+                            </div>
+                          </div>
+
+                          {/* Countdown */}
+                          {panelDaysLeft !== null && (
+                            <div className={`mb-4 p-2.5 rounded-lg text-center text-sm font-semibold ${
+                              panelDaysLeft < 7 ? 'bg-destructive/10 text-destructive'
+                                : panelDaysLeft < 14 ? 'bg-warning/10 text-warning'
+                                : 'bg-primary/10 text-primary'
+                            }`}>
+                              {panelDaysLeft >= 0 ? `${panelDaysLeft} days left` : 'Exam date passed'}
+                            </div>
+                          )}
+
+                          {panelDayFocusSessions.length > 0 && (
+                            <div className="mb-4 p-3 rounded-lg bg-primary/10 border border-primary/20">
+                              <p className="text-xs font-medium mb-1">
+                                Focus for {new Date(focusDate!).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              </p>
+                              <ul className="space-y-0.5">
+                                {panelDayFocusSessions.map(s => (
+                                  <li key={s.id} className="text-xs text-muted-foreground">• {s.topic}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Week timeline */}
+                          <p className="text-xs font-semibold text-muted-foreground mb-1.5">Week Timeline</p>
+                          <div className="flex gap-2 overflow-x-auto pb-2 mb-4">
+                            {panelRoadmap.weeklyPlans.map((week, i) => (
+                              <div
+                                key={i}
+                                title={`Week ${week.week}: ${week.focus}`}
+                                className={`flex-shrink-0 h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold border ${
+                                  i === panelCurrentWeekIndex
+                                    ? 'bg-primary text-primary-foreground border-primary'
+                                    : i < panelCurrentWeekIndex
+                                    ? 'bg-success/10 text-success border-success/30'
+                                    : 'bg-muted text-muted-foreground border-border'
+                                }`}
+                              >
+                                {week.week}
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Remaining hours */}
+                          <div className="flex items-center gap-1.5 text-sm text-muted-foreground mb-4">
+                            <Hourglass className="h-4 w-4" />
+                            <span><strong className="text-foreground">{panelRemainingHours}h</strong> remaining in this roadmap</span>
+                          </div>
+
+                          <Collapsible open={showFullPlan} onOpenChange={setShowFullPlan}>
+                            <CollapsibleTrigger className="flex items-center gap-1 text-sm font-medium text-primary hover:underline">
+                              {showFullPlan ? 'Hide full plan' : 'Show full plan'}
+                              <ChevronDown className={`h-4 w-4 transition-transform ${showFullPlan ? 'rotate-180' : ''}`} />
+                            </CollapsibleTrigger>
+                            <CollapsibleContent className="mt-3 space-y-4">
+                              {/* Full week-by-week roadmap */}
+                              <div>
+                                <p className="text-xs font-semibold mb-1.5">Full Roadmap</p>
+                                <div className="grid sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
+                                  {panelRoadmap.weeklyPlans.map((week, i) => (
+                                    <div key={i} className="p-3 bg-background rounded-lg">
+                                      <div className="flex items-start justify-between gap-2 mb-1.5">
+                                        <p className="text-xs font-medium text-primary">
+                                          Week {week.week}: {week.focus}
+                                        </p>
+                                        <button
+                                          className="flex-shrink-0 text-muted-foreground hover:text-primary p-0.5"
+                                          onClick={() => openEditWeek(i)}
+                                          aria-label={`Edit week ${week.week}`}
+                                        >
+                                          <Pencil className="h-3.5 w-3.5" />
+                                        </button>
+                                      </div>
+                                      <div className="space-y-0.5">
+                                        {week.topics.map((t, ti) => (
+                                          <div key={ti} className="flex items-center gap-1.5 text-xs">
+                                            <Target className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                                            <span>{t}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                      {week.goals.length > 0 && (
+                                        <div className="mt-1.5 pt-1.5 border-t border-border/50 space-y-0.5">
+                                          {week.goals.map((g, gi) => (
+                                            <div key={gi} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                              <ListChecks className="h-3 w-3 flex-shrink-0" />
+                                              <span>{g}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                      {week.notes && (
+                                        <div className="mt-1.5 flex items-start gap-1.5 text-[11px] text-muted-foreground">
+                                          <StickyNote className="h-3 w-3 flex-shrink-0 mt-0.5" />
+                                          <span className="italic">{week.notes}</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Topics with their descriptions and current status */}
+                              {panelTopics.length > 0 && (
+                                <div>
+                                  <p className="text-xs font-semibold mb-1.5">Topics</p>
+                                  <div className="grid sm:grid-cols-2 gap-1.5">
+                                    {panelTopics.map(t => (
+                                      <div key={t.id} className="p-2 bg-background rounded-lg">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className={`text-xs font-medium ${t.status === 'completed' ? 'line-through text-muted-foreground' : ''}`}>
+                                            {t.name}
+                                          </span>
+                                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                                            t.status === 'completed' ? 'bg-success/10 text-success'
+                                              : t.status === 'in-progress' ? 'bg-primary/10 text-primary'
+                                              : t.status === 'revising' ? 'bg-warning/10 text-warning'
+                                              : 'bg-muted text-muted-foreground'
+                                          }`}>
+                                            {t.status}
+                                          </span>
+                                        </div>
+                                        {t.notes && (
+                                          <p className="text-[11px] text-muted-foreground mt-0.5">{t.notes}</p>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </CollapsibleContent>
+                          </Collapsible>
+                        </>
+                      )}
+                    </>
+                  )}
+                </Card>
+              </motion.div>
+            )}
+
+            {/* Right column: Today's Focus + Checklist + Goals + This Week + AI Tip */}
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="lg:col-span-1 space-y-6">
+              <Card className="p-6">
                   <div className="flex items-center justify-between mb-6">
                     <div className="flex items-center gap-2">
                       <Calendar className="h-5 w-5 text-primary" />
-                      <h3 className="text-xl font-semibold">Today's Schedule</h3>
+                      <h3 className="text-xl font-semibold">Today's Study Plan</h3>
                     </div>
                     {totalToday > 0 && (
                       <span className="text-sm text-muted-foreground">
@@ -317,97 +709,116 @@ const Dashboard = () => {
                     </div>
                   )}
 
-                  {/* Real sessions with checkboxes */}
-                  {realTodaySessions.length > 0 ? (
+                  {/* Today's Focus — one grouped card per subject+topic, not one per session */}
+                  {todayFocusGroups.length > 0 ? (
                     <div className="space-y-3">
-                      {realTodaySessions.map((session, index) => {
-                        const subjectColor =
-                          subjects.find(s => s.name === session.subjectName)?.color ?? 'bg-primary';
+                      {todayFocusGroups.map((group, index) => {
+                        const groupCompleted = group.groupSessions.filter(s => s.completed).length;
+                        const allDone = groupCompleted === group.groupSessions.length;
+                        const isExpanded = !!expandedFocusGroups[group.key];
                         return (
                           <motion.div
-                            key={session.id}
+                            key={group.key}
                             initial={{ opacity: 0, x: -20 }}
                             animate={{ opacity: 1, x: 0 }}
                             transition={{ delay: index * 0.05 }}
                             className={`p-4 rounded-lg border transition-all ${
-                              session.completed
-                                ? 'border-success/30 bg-success/5'
-                                : 'border-border hover:border-primary/30'
+                              allDone ? 'border-success/30 bg-success/5' : 'border-border hover:border-primary/30'
                             }`}
                           >
                             <div className="flex items-start gap-4">
                               {/* Colour stripe */}
-                              <div className={`h-12 w-1 rounded-full flex-shrink-0 ${subjectColor}`} />
+                              <div className={`h-12 w-1 rounded-full flex-shrink-0 ${group.color}`} />
 
-                              {/* Content */}
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-start justify-between gap-2">
                                   <div className="min-w-0">
-                                    <h4
-                                      className={`font-semibold truncate ${
-                                        session.completed ? 'text-muted-foreground line-through' : ''
-                                      }`}
-                                    >
-                                      {session.subjectName ?? 'Study'}
+                                    <h4 className={`font-semibold truncate ${allDone ? 'text-muted-foreground line-through' : ''}`}>
+                                      {group.subjectName}
                                     </h4>
-                                    <p
-                                      className={`text-sm truncate ${
-                                        session.completed
-                                          ? 'text-muted-foreground/60 line-through'
-                                          : 'text-muted-foreground'
-                                      }`}
-                                    >
-                                      {session.topic}
+                                    <p className={`text-sm truncate ${allDone ? 'text-muted-foreground/60 line-through' : 'text-muted-foreground'}`}>
+                                      {group.topic}
                                     </p>
                                   </div>
                                   <div className="text-right flex-shrink-0">
-                                    {session.startTime && (
-                                      <p className="text-sm font-medium">{fmt12h(session.startTime)}</p>
-                                    )}
-                                    <p className="text-xs text-muted-foreground">{session.duration} min</p>
+                                    <p className="text-sm font-medium">{group.totalMinutes} min today</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {groupCompleted}/{group.groupSessions.length} sessions
+                                    </p>
                                   </div>
                                 </div>
 
-                                {/* Checkbox row */}
-                                <div className="flex items-center gap-2 mt-3">
-                                  <Checkbox
-                                    id={`session-${session.id}`}
-                                    checked={session.completed}
-                                    disabled={session.completed}
-                                    onCheckedChange={(checked) => {
-                                      if (checked) completeStudySession(session.id);
-                                    }}
-                                    className="h-5 w-5"
-                                    aria-label={`Mark session "${session.topic}" as complete`}
-                                  />
-                                  <label
-                                    htmlFor={`session-${session.id}`}
-                                    className={`text-sm cursor-pointer select-none ${
-                                      session.completed
-                                        ? 'text-success font-medium'
-                                        : 'text-muted-foreground'
-                                    }`}
-                                  >
-                                    {session.completed ? 'Completed ✓' : 'Mark as complete'}
-                                  </label>
+                                {/* Bulk complete + expand toggle */}
+                                <div className="flex items-center gap-3 mt-3">
+                                  <div className="flex items-center gap-2">
+                                    <Checkbox
+                                      id={`group-${group.key}`}
+                                      checked={allDone}
+                                      disabled={allDone}
+                                      onCheckedChange={(checked) => {
+                                        if (checked) {
+                                          group.groupSessions.filter(s => !s.completed).forEach(s => completeStudySession(s.id));
+                                        }
+                                      }}
+                                      className="h-5 w-5"
+                                      aria-label={`Mark all "${group.topic}" sessions complete`}
+                                    />
+                                    <label
+                                      htmlFor={`group-${group.key}`}
+                                      className={`text-sm cursor-pointer select-none ${allDone ? 'text-success font-medium' : 'text-muted-foreground'}`}
+                                    >
+                                      {allDone ? 'Completed ✓' : 'Mark all complete'}
+                                    </label>
+                                  </div>
+                                  {group.groupSessions.length > 1 && (
+                                    <button
+                                      className="text-xs text-primary hover:underline flex items-center gap-0.5"
+                                      onClick={() => setExpandedFocusGroups(prev => ({ ...prev, [group.key]: !isExpanded }))}
+                                    >
+                                      {isExpanded ? 'Hide timings' : 'Show timings'}
+                                      <ChevronDown className={`h-3 w-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                                    </button>
+                                  )}
                                 </div>
 
-                                {/* Adaptive action buttons */}
-                                {!session.completed && (
-                                  <div className="flex items-center gap-1 mt-1">
-                                    <button
-                                      className="text-xs text-destructive hover:underline px-0"
-                                      onClick={() => markSessionMissed(session.id)}
-                                    >
-                                      Mark missed
-                                    </button>
-                                    <span className="text-muted-foreground text-xs">·</span>
-                                    <button
-                                      className="text-xs text-primary hover:underline px-0"
-                                      onClick={() => rescheduleSession(session.id)}
-                                    >
-                                      Reschedule
-                                    </button>
+                                {/* Individual sessions — collapsible */}
+                                {isExpanded && (
+                                  <div className="mt-3 space-y-2 border-t border-border pt-3">
+                                    {group.groupSessions.map(session => (
+                                      <div key={session.id} className="flex items-center justify-between gap-2 text-sm">
+                                        <div className="flex items-center gap-2">
+                                          <Checkbox
+                                            checked={session.completed}
+                                            disabled={session.completed}
+                                            onCheckedChange={(checked) => { if (checked) completeStudySession(session.id); }}
+                                            className="h-4 w-4"
+                                            aria-label={`Mark session at ${session.startTime} complete`}
+                                          />
+                                          <span className={session.completed ? 'text-muted-foreground line-through' : ''}>
+                                            {session.startTime ? fmt12h(session.startTime) : 'Anytime'}
+                                            {session.endTime ? ` – ${fmt12h(session.endTime)}` : ''}
+                                          </span>
+                                          <span className="text-xs text-muted-foreground">({session.duration} min)</span>
+                                        </div>
+                                        {!session.completed && (
+                                          <div className="flex items-center gap-1 flex-shrink-0">
+                                            <button
+                                              className="text-xs text-destructive hover:underline px-0"
+                                              onClick={() => markSessionMissed(session.id)}
+                                            >
+                                              Missed
+                                            </button>
+                                            <span className="text-muted-foreground text-xs">·</span>
+                                            <button
+                                              className="text-xs text-primary hover:underline px-0"
+                                              onClick={() => rescheduleSession(session.id)}
+                                            >
+                                              Reschedule
+                                            </button>
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
                                   </div>
                                 )}
                               </div>
@@ -464,10 +875,304 @@ const Dashboard = () => {
                       </Button>
                     </div>
                   )}
+              </Card>
+
+              {/* Today's Checklist — AI-suggested activities for today's topics */}
+              {todayChecklist.length > 0 && (
+                <Card className="p-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <ListChecks className="h-4 w-4 text-primary" />
+                    <h3 className="font-semibold text-sm">Today's Checklist</h3>
+                    <span className="text-xs text-muted-foreground ml-auto">
+                      {todayChecklist.filter(i => i.completed).length}/{todayChecklist.length}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {todayChecklist.map(item => (
+                      <label key={item.id} className="flex items-center gap-2 cursor-pointer">
+                        <Checkbox
+                          checked={item.completed}
+                          onCheckedChange={() => toggleChecklistItem(item.id)}
+                          className="h-4 w-4"
+                        />
+                        <span className={`text-sm ${item.completed ? 'text-muted-foreground line-through' : ''}`}>{item.text}</span>
+                      </label>
+                    ))}
+                  </div>
+                </Card>
+              )}
+
+              {/* My Goals — persistent personal checklist */}
+              <Card className="p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <ClipboardList className="h-4 w-4 text-primary" />
+                  <h3 className="font-semibold text-sm">My Goals</h3>
+                </div>
+                <div className="flex gap-2 mb-3">
+                  <input
+                    type="text"
+                    value={newGoalText}
+                    onChange={e => setNewGoalText(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && newGoalText.trim()) {
+                        addGoal(newGoalText);
+                        setNewGoalText('');
+                      }
+                    }}
+                    placeholder="e.g. Finish notes, Solve Assignment 2…"
+                    className="flex-1 px-3 py-1.5 text-sm bg-background border border-input rounded-md"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      if (newGoalText.trim()) {
+                        addGoal(newGoalText);
+                        setNewGoalText('');
+                      }
+                    }}
+                  >
+                    Add
+                  </Button>
+                </div>
+                {myGoals.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No goals yet — add your own study tasks above.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {myGoals.map(goal => (
+                      <div key={goal.id} className="flex items-center gap-2 group">
+                        <Checkbox
+                          checked={goal.completed}
+                          onCheckedChange={() => toggleGoal(goal.id)}
+                          className="h-4 w-4"
+                        />
+                        <span className={`text-sm flex-1 ${goal.completed ? 'text-muted-foreground line-through' : ''}`}>
+                          {goal.text}
+                        </span>
+                        <button
+                          onClick={() => removeGoal(goal.id)}
+                          className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                          aria-label={`Remove goal "${goal.text}"`}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+
+              {/* This Week — compact cross-subject progress */}
+              {thisWeekBySubject.length > 0 && (
+                <Card className="p-5">
+                  <h3 className="font-semibold text-sm mb-3">This Week</h3>
+                  <div className="space-y-3">
+                    {thisWeekBySubject.map(w => (
+                      <div key={w.subjectId}>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className={`h-2 w-2 rounded-full flex-shrink-0 ${w.color}`} />
+                            <span className="text-sm font-medium truncate">{w.subjectName}</span>
+                            <span className="text-xs text-muted-foreground flex-shrink-0">Week {w.week.week}</span>
+                          </div>
+                          <span className="text-xs text-muted-foreground flex-shrink-0">
+                            {w.doneCount}/{w.week.topics.length || 0} topics
+                          </span>
+                        </div>
+                        <Progress
+                          value={w.week.topics.length ? (w.doneCount / w.week.topics.length) * 100 : 0}
+                          className="h-1.5"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              )}
+
+              {/* AI Tip / Daily Motivation */}
+              <Card className="p-4 bg-gradient-to-r from-primary/5 to-secondary/5 border-primary/20">
+                <div className="flex items-start gap-2">
+                  <Lightbulb className="h-4 w-4 text-warning flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-muted-foreground">{dailyTip}</p>
+                </div>
+              </Card>
+            </motion.div>
+
+            </div>
+
+            {/* Edit Week dialog — personalize an already-generated week */}
+            <Dialog open={editWeekIndex !== null} onOpenChange={open => !open && setEditWeekIndex(null)}>
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>
+                    Edit Week {editWeekIndex !== null ? panelRoadmap?.weeklyPlans[editWeekIndex]?.week : ''}
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Focus / Title</label>
+                    <Input value={editFocus} onChange={e => setEditFocus(e.target.value)} placeholder="e.g. Neural networks fundamentals" />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Topics</label>
+                    <div className="flex gap-2 mb-2">
+                      <Input
+                        value={newEditTopicText}
+                        onChange={e => setNewEditTopicText(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && newEditTopicText.trim()) {
+                            setEditTopics(prev => [...prev, { name: newEditTopicText.trim() }]);
+                            setNewEditTopicText('');
+                          }
+                        }}
+                        placeholder="Add a topic…"
+                        className="h-9"
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          if (newEditTopicText.trim()) {
+                            setEditTopics(prev => [...prev, { name: newEditTopicText.trim() }]);
+                            setNewEditTopicText('');
+                          }
+                        }}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {editTopics.map((t, i) => (
+                        <div key={i} className="px-2 py-0.5 bg-primary/10 border border-primary/20 rounded-full flex items-center gap-1">
+                          <span className="text-xs font-medium">{t.name}</span>
+                          <button onClick={() => setEditTopics(prev => prev.filter((_, idx) => idx !== i))} className="text-primary hover:text-primary/70">
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      ))}
+                      {editTopics.length === 0 && (
+                        <p className="text-xs text-muted-foreground">No topics — add at least one above.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Weekly Goals</label>
+                    <div className="flex gap-2 mb-2">
+                      <Input
+                        value={newEditGoalText}
+                        onChange={e => setNewEditGoalText(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && newEditGoalText.trim()) {
+                            setEditGoalsList(prev => [...prev, newEditGoalText.trim()]);
+                            setNewEditGoalText('');
+                          }
+                        }}
+                        placeholder="e.g. Finish notes, Solve 50 MCQs…"
+                        className="h-9"
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          if (newEditGoalText.trim()) {
+                            setEditGoalsList(prev => [...prev, newEditGoalText.trim()]);
+                            setNewEditGoalText('');
+                          }
+                        }}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {editGoalsList.map((g, i) => (
+                        <div key={i} className="px-2 py-0.5 bg-secondary/10 border border-secondary/20 rounded-full flex items-center gap-1">
+                          <span className="text-xs font-medium">{g}</span>
+                          <button onClick={() => setEditGoalsList(prev => prev.filter((_, idx) => idx !== i))} className="text-secondary-foreground/70 hover:text-secondary-foreground">
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Personal Notes</label>
+                    <Textarea
+                      value={editWeekNotes}
+                      onChange={e => setEditWeekNotes(e.target.value)}
+                      placeholder="Any notes for yourself about this week…"
+                      rows={3}
+                    />
+                  </div>
+
+                  <p className="text-[11px] text-muted-foreground">
+                    Note: this updates the roadmap and dashboard views immediately. Calendar sessions already
+                    generated from this week's old topics won't be rewritten automatically.
+                  </p>
+                </div>
+                <DialogFooter className="gap-2">
+                  <Button variant="outline" onClick={() => setEditWeekIndex(null)}>Cancel</Button>
+                  <Button
+                    onClick={handleSaveWeekEdit}
+                    disabled={editTopics.length === 0}
+                    className="gradient-primary text-white"
+                  >
+                    Save Week
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            {/* Secondary widgets */}
+            <motion.div variants={container} initial="hidden" animate="show" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+              {/* Subject Progress */}
+              <motion.div variants={item} className="lg:col-span-2">
+                <Card className="p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-xl font-semibold">Subject Progress</h3>
+                    <Button size="sm" variant="outline" onClick={() => navigate('/subjects')}>Manage</Button>
+                  </div>
+                  {subjects.length === 0 ? (
+                    <div className="text-center py-8">
+                      <BookOpen className="h-12 w-12 mx-auto mb-3 text-muted-foreground" />
+                      <p className="text-muted-foreground mb-4">No subjects added yet</p>
+                      <Button onClick={() => navigate('/subjects')} className="gradient-primary text-white">
+                        <Plus className="h-4 w-4 mr-2" />
+                        Add Your First Subject
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {subjects.map(subject => (
+                        <div key={subject.id}>
+                          <div className="flex justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <div className={`h-3 w-3 rounded ${subject.color}`} />
+                              <span className="font-medium">{subject.name}</span>
+                              <span className="text-xs text-muted-foreground">
+                                ({subject.completedTopics}/{subject.totalTopics} topics)
+                              </span>
+                            </div>
+                            <span className="text-sm font-semibold text-primary">{subject.progress}%</span>
+                          </div>
+                          <div className="relative h-2 bg-muted rounded-full overflow-hidden">
+                            <motion.div
+                              initial={{ width: 0 }}
+                              animate={{ width: `${subject.progress}%` }}
+                              transition={{ duration: 1, delay: 0.2 }}
+                              className="absolute h-full gradient-primary rounded-full"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </Card>
               </motion.div>
 
-              {/* Right Column */}
+              {/* Right column: Overall Progress, Quick Actions, Upcoming Exams */}
               <div className="space-y-6">
                 {/* Overall Progress */}
                 <motion.div variants={item}>
@@ -546,96 +1251,51 @@ const Dashboard = () => {
                     </div>
                   </Card>
                 </motion.div>
-              </div>
 
-              {/* Subject Progress */}
-              <motion.div variants={item} className="lg:col-span-2">
-                <Card className="p-6">
-                  <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-semibold">Subject Progress</h3>
-                    <Button size="sm" variant="outline" onClick={() => navigate('/subjects')}>Manage</Button>
-                  </div>
-                  {subjects.length === 0 ? (
-                    <div className="text-center py-8">
-                      <BookOpen className="h-12 w-12 mx-auto mb-3 text-muted-foreground" />
-                      <p className="text-muted-foreground mb-4">No subjects added yet</p>
-                      <Button onClick={() => navigate('/subjects')} className="gradient-primary text-white">
-                        <Plus className="h-4 w-4 mr-2" />
-                        Add Your First Subject
-                      </Button>
+                {/* Upcoming Exams */}
+                <motion.div variants={item}>
+                  <Card className="p-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <Target className="h-5 w-5 text-primary" />
+                      <h3 className="text-xl font-semibold">Upcoming Exams</h3>
                     </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {subjects.map(subject => (
-                        <div key={subject.id}>
-                          <div className="flex justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <div className={`h-3 w-3 rounded ${subject.color}`} />
-                              <span className="font-medium">{subject.name}</span>
-                              <span className="text-xs text-muted-foreground">
-                                ({subject.completedTopics}/{subject.totalTopics} topics)
+                    {upcomingExams.length === 0 ? (
+                      <div className="text-center py-6">
+                        <Calendar className="h-10 w-10 mx-auto mb-2 text-muted-foreground" />
+                        <p className="text-sm text-muted-foreground">No exams scheduled</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {upcomingExams.map(exam => (
+                          <div key={exam.subject} className="p-3 rounded-lg border border-border hover:border-primary/50 transition-colors">
+                            <div className="flex justify-between items-start mb-2">
+                              <div className="flex items-center gap-2">
+                                <div className={`h-2 w-2 rounded-full ${exam.color}`} />
+                                <h4 className="font-semibold">{exam.subject}</h4>
+                              </div>
+                              <span className={`text-xs px-2 py-1 rounded-full ${
+                                exam.status === 'on-track' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'
+                              }`}>
+                                {exam.status === 'on-track' ? 'On Track' : 'Needs Attention'}
                               </span>
                             </div>
-                            <span className="text-sm font-semibold text-primary">{subject.progress}%</span>
-                          </div>
-                          <div className="relative h-2 bg-muted rounded-full overflow-hidden">
-                            <motion.div
-                              initial={{ width: 0 }}
-                              animate={{ width: `${subject.progress}%` }}
-                              transition={{ duration: 1, delay: 0.2 }}
-                              className="absolute h-full gradient-primary rounded-full"
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </Card>
-              </motion.div>
-
-              {/* Upcoming Exams */}
-              <motion.div variants={item}>
-                <Card className="p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <Target className="h-5 w-5 text-primary" />
-                    <h3 className="text-xl font-semibold">Upcoming Exams</h3>
-                  </div>
-                  {upcomingExams.length === 0 ? (
-                    <div className="text-center py-6">
-                      <Calendar className="h-10 w-10 mx-auto mb-2 text-muted-foreground" />
-                      <p className="text-sm text-muted-foreground">No exams scheduled</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {upcomingExams.map(exam => (
-                        <div key={exam.subject} className="p-3 rounded-lg border border-border hover:border-primary/50 transition-colors">
-                          <div className="flex justify-between items-start mb-2">
-                            <div className="flex items-center gap-2">
-                              <div className={`h-2 w-2 rounded-full ${exam.color}`} />
-                              <h4 className="font-semibold">{exam.subject}</h4>
+                            <p className="text-sm text-muted-foreground mb-1">{exam.date}</p>
+                            <div className="flex items-center justify-between">
+                              <p className={`text-sm font-medium ${
+                                exam.daysLeft < 7 ? 'text-destructive' :
+                                exam.daysLeft < 14 ? 'text-warning' : 'text-primary'
+                              }`}>
+                                {exam.daysLeft} days left
+                              </p>
+                              <Button size="sm" variant="ghost" onClick={() => navigate('/study-session')}>Study</Button>
                             </div>
-                            <span className={`text-xs px-2 py-1 rounded-full ${
-                              exam.status === 'on-track' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'
-                            }`}>
-                              {exam.status === 'on-track' ? 'On Track' : 'Needs Attention'}
-                            </span>
                           </div>
-                          <p className="text-sm text-muted-foreground mb-1">{exam.date}</p>
-                          <div className="flex items-center justify-between">
-                            <p className={`text-sm font-medium ${
-                              exam.daysLeft < 7 ? 'text-destructive' :
-                              exam.daysLeft < 14 ? 'text-warning' : 'text-primary'
-                            }`}>
-                              {exam.daysLeft} days left
-                            </p>
-                            <Button size="sm" variant="ghost" onClick={() => navigate('/study-session')}>Study</Button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </Card>
-              </motion.div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                </motion.div>
+              </div>
 
             </motion.div>
           </>

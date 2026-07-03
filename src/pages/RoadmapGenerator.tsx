@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useStudyData } from '@/context/StudyDataContext';
-import { generateStudyRoadmap, RoadmapInput } from '@/services/geminiService';
+import { generateStudyRoadmap, RoadmapInput, StudyRoadmap } from '@/services/geminiService';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -30,6 +30,8 @@ import {
   Timer,
   SlidersHorizontal,
   Sun,
+  AlertTriangle,
+  CheckCircle2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -51,8 +53,12 @@ const DEFAULT_ND_OPTIONS = {
   lowDistractionMode: false,
 };
 
-const DEFAULT_FORM: RoadmapInput = {
-  subjects: [],
+// Form-level state omits subjectId/topicTags/subjects — subject selection and its
+// topics are resolved per-subject at generate time from the user's real syllabus.
+type RoadmapFormData = Omit<RoadmapInput, 'subjectId' | 'topicTags' | 'subjects'>;
+
+const DEFAULT_FORM: RoadmapFormData = {
+  startDate: new Date().toISOString().split('T')[0],
   examDate: '',
   currentLevel: 'intermediate',
   studyHoursPerDay: 6,
@@ -72,30 +78,41 @@ const DEFAULT_FORM: RoadmapInput = {
 
 const RoadmapGenerator = () => {
   const navigate = useNavigate();
-  const { saveRoadmap, subjects, addSubject } = useStudyData();
+  const [searchParams] = useSearchParams();
+  const { saveRoadmap, subjects, updateSubject } = useStudyData();
   const [isGenerating, setIsGenerating] = useState(false);
 
-  const [formData, setFormData] = useState<RoadmapInput>({
-    ...DEFAULT_FORM,
-    subjects: subjects.map(s => s.name),
-  });
+  const [formData, setFormData] = useState<RoadmapFormData>({ ...DEFAULT_FORM });
 
-  const [customSubject, setCustomSubject] = useState('');
+  // Which existing subjects to generate a roadmap for — topics come from each
+  // subject's own syllabus (added in My Subjects), never typed here.
+  const [selectedSubjectIds, setSelectedSubjectIds] = useState<Set<string>>(new Set());
   const [weakArea, setWeakArea] = useState('');
-  const [generatedRoadmap, setGeneratedRoadmap] = useState<any>(null);
+  const [generatedRoadmaps, setGeneratedRoadmaps] = useState<StudyRoadmap[]>([]);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
 
-  // ── Subjects ──────────────────────────────────────────────────────────────
-  const handleAddSubject = () => {
-    const trimmed = customSubject.trim();
-    if (trimmed && !formData.subjects.includes(trimmed)) {
-      setFormData({ ...formData, subjects: [...formData.subjects, trimmed] });
-      setCustomSubject('');
+  // Pre-select a subject when arriving via a "Generate roadmap" link (?subjectId=...)
+  useEffect(() => {
+    const preselect = searchParams.get('subjectId');
+    if (preselect && subjects.some(s => s.id === preselect)) {
+      setSelectedSubjectIds(prev => new Set(prev).add(preselect));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, subjects.length]);
+
+  const subjectTopics = (subjectId: string) => {
+    const subject = subjects.find(s => s.id === subjectId);
+    if (!subject) return [];
+    return subject.chapters.flatMap(c => c.topics);
   };
 
-  const handleRemoveSubject = (subject: string) => {
-    setFormData({ ...formData, subjects: formData.subjects.filter(s => s !== subject) });
+  const toggleSubjectSelection = (subjectId: string) => {
+    setSelectedSubjectIds(prev => {
+      const next = new Set(prev);
+      if (next.has(subjectId)) next.delete(subjectId);
+      else next.add(subjectId);
+      return next;
+    });
   };
 
   // ── Weak areas ────────────────────────────────────────────────────────────
@@ -134,8 +151,12 @@ const RoadmapGenerator = () => {
       toast.error('Please select your exam date');
       return;
     }
-    if (formData.subjects.length === 0) {
-      toast.error('Please add at least one subject');
+    if (formData.startDate && formData.examDate <= formData.startDate) {
+      toast.error('Exam date must be after the start date');
+      return;
+    }
+    if (selectedSubjectIds.size === 0) {
+      toast.error('Please select at least one subject');
       return;
     }
     if ((formData.availableStudyDays ?? []).length === 0) {
@@ -143,15 +164,55 @@ const RoadmapGenerator = () => {
       return;
     }
 
+    // The AI only ever schedules topics the user has actually defined — never
+    // generic filler. Subjects with no topics yet are skipped, not padded out.
+    const selected = subjects.filter(s => selectedSubjectIds.has(s.id));
+    const ready = selected.filter(s => subjectTopics(s.id).length > 0);
+    const skipped = selected.filter(s => subjectTopics(s.id).length === 0);
+
+    if (skipped.length > 0) {
+      toast.error(
+        skipped.length === selected.length
+          ? 'None of the selected subjects have topics yet'
+          : `Skipping ${skipped.map(s => s.name).join(', ')} — no topics yet`,
+        { description: 'Add topics in My Subjects before generating a roadmap for them' },
+      );
+    }
+    if (ready.length === 0) {
+      return;
+    }
+
     setIsGenerating(true);
     try {
-      toast.info('AI is generating your personalised roadmap…', {
+      toast.info('AI is generating your personalised roadmap(s)…', {
         description: 'This may take a few moments',
       });
-      const roadmap = await generateStudyRoadmap(formData);
-      setGeneratedRoadmap(roadmap);
+
+      // One roadmap per subject, scheduling exactly that subject's own topics.
+      // topicTags carries plain topic names only (shown verbatim in the UI);
+      // topicDetails carries the same names plus description + stable topicId,
+      // used for AI prompt context and for ID-based progress matching later.
+      const results: StudyRoadmap[] = [];
+      for (const subject of ready) {
+        const topics = subjectTopics(subject.id);
+        const topicTags = topics.map(t => t.name);
+        const topicDetails = topics.map(t => ({ name: t.name, description: t.notes, topicId: t.id }));
+        const perSubjectInput: RoadmapInput = {
+          ...formData,
+          subjects: [subject.name],
+          subjectId: subject.id,
+          topicTags,
+          topicDetails,
+        };
+        const generated = await generateStudyRoadmap(perSubjectInput);
+        results.push({ ...generated, subjectId: subject.id, subjectName: subject.name });
+      }
+
+      setGeneratedRoadmaps(results);
       setShowSaveDialog(true);
-      toast.success('Roadmap generated! 🎉', { description: 'Review your personalised study plan' });
+      toast.success('Roadmap generated! 🎉', {
+        description: `${results.length} subject plan${results.length > 1 ? 's' : ''} ready to review`,
+      });
     } catch (error) {
       console.error('Error generating roadmap:', error);
       toast.error('Failed to generate roadmap', { description: 'Please try again or check your API key' });
@@ -162,12 +223,14 @@ const RoadmapGenerator = () => {
 
   // ── Save ──────────────────────────────────────────────────────────────────
   const handleSaveRoadmap = async () => {
-    if (!generatedRoadmap) return;
+    if (generatedRoadmaps.length === 0) return;
 
     setShowSaveDialog(false);
-    toast.info('Saving your roadmap…');
+    toast.info('Saving your roadmap(s)…');
     try {
-      await saveRoadmap(generatedRoadmap);
+      for (const rm of generatedRoadmaps) {
+        await saveRoadmap(rm);
+      }
     } catch (error) {
       console.error('Error saving roadmap:', error);
       toast.error('Failed to save roadmap', { description: 'Check your connection and try again' });
@@ -175,38 +238,15 @@ const RoadmapGenerator = () => {
       return;
     }
 
-    // Roadmap saved — now save subjects (non-blocking; failures are toasted individually)
-    for (const [index, subjectName] of formData.subjects.entries()) {
-      const subjectWeeks = generatedRoadmap.weeklyPlans.filter((week: any) =>
-        week.focus.toLowerCase().includes(subjectName.toLowerCase()),
-      );
-      if (subjectWeeks.length > 0) {
-        const examDate = formData.examDate || undefined;
-        const newSubject = {
-          name: subjectName,
-          color: ['bg-blue-500', 'bg-purple-500', 'bg-green-500', 'bg-orange-500', 'bg-pink-500'][index % 5],
-          ...(examDate ? { examDate } : {}),
-          priority: 5 as const,
-          chapters: subjectWeeks.map((week: any, weekIndex: number) => ({
-            id: `chapter_${Date.now()}_${weekIndex}`,
-            name: `Week ${week.week}: ${week.focus.split(' — ')[0] ?? week.focus}`,
-            difficulty: weekIndex < subjectWeeks.length / 3 ? 'easy' as const
-              : weekIndex < (2 * subjectWeeks.length) / 3 ? 'medium' as const
-              : 'hard' as const,
-            length: 'medium' as const,
-            progress: 0,
-            topics: week.topics.map((topic: string, topicIndex: number) => ({
-              id: `topic_${Date.now()}_${weekIndex}_${topicIndex}`,
-              name: topic,
-              status: 'pending' as const,
-              timeAllocated: Math.floor(
-                ((week.studyHours ?? formData.studyHoursPerDay) / week.topics.length) * 60,
-              ),
-              timeSpent: 0,
-            })),
-          })),
-        };
-        await addSubject(newSubject);
+    // Roadmaps saved — subjects and their topics are the user's own syllabus and
+    // are never touched here; only the exam date gets patched onto each subject.
+    const examDate = formData.examDate || undefined;
+    if (examDate) {
+      for (const rm of generatedRoadmaps) {
+        const existingSubject = subjects.find(s => s.id === rm.subjectId);
+        if (existingSubject && existingSubject.examDate !== examDate) {
+          await updateSubject(existingSubject.id, { examDate });
+        }
       }
     }
 
@@ -266,47 +306,110 @@ const RoadmapGenerator = () => {
               {/* ── 1. Subjects ── */}
               <div>
                 <Label className="text-lg font-semibold mb-3 block">📚 Subjects</Label>
-                <div className="flex gap-2 mb-3">
-                  <Input
-                    placeholder="Add a subject…"
-                    value={customSubject}
-                    onChange={e => setCustomSubject(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleAddSubject()}
-                  />
-                  <Button onClick={handleAddSubject}>Add</Button>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {formData.subjects.map(subject => (
-                    <div
-                      key={subject}
-                      className="px-3 py-1 bg-primary/10 border border-primary/20 rounded-full flex items-center gap-2"
-                    >
-                      <span className="text-sm font-medium">{subject}</span>
-                      <button
-                        onClick={() => handleRemoveSubject(subject)}
-                        className="text-primary hover:text-primary/70"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Pick which subjects to generate a roadmap for. The AI schedules exactly the topics
+                  you've added to each subject in My Subjects — nothing invented, nothing skipped.
+                </p>
+
+                {subjects.length === 0 ? (
+                  <div className="p-4 rounded-lg border border-dashed border-border text-center">
+                    <p className="text-sm text-muted-foreground mb-3">You don't have any subjects yet.</p>
+                    <Button size="sm" variant="outline" onClick={() => navigate('/subjects')}>
+                      Add a subject
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {subjects.map(subject => {
+                      const topics = subjectTopics(subject.id);
+                      const selected = selectedSubjectIds.has(subject.id);
+                      return (
+                        <div
+                          key={subject.id}
+                          className={`p-3 rounded-lg border transition-colors ${
+                            selected ? 'border-primary/40 bg-primary/5' : 'border-border'
+                          }`}
+                        >
+                          <label className="flex items-start gap-3 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              onChange={() => toggleSubjectSelection(subject.id)}
+                              className="mt-1 h-4 w-4 accent-primary cursor-pointer"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <div className={`h-2.5 w-2.5 rounded-full ${subject.color}`} />
+                                <span className="font-medium">{subject.name}</span>
+                                {topics.length > 0 ? (
+                                  <span className="text-xs px-2 py-0.5 rounded-full bg-success/10 text-success flex items-center gap-1">
+                                    <CheckCircle2 className="h-3 w-3" /> {topics.length} topic{topics.length > 1 ? 's' : ''}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs px-2 py-0.5 rounded-full bg-warning/10 text-warning flex items-center gap-1">
+                                    <AlertTriangle className="h-3 w-3" /> No topics yet
+                                  </span>
+                                )}
+                              </div>
+                              {topics.length === 0 ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.preventDefault(); navigate(`/subjects`); }}
+                                  className="text-xs text-primary hover:underline mt-1"
+                                >
+                                  Add topics for this subject first →
+                                </button>
+                              ) : selected && (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {topics.map(t => (
+                                    <span
+                                      key={t.id}
+                                      className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground"
+                                      title={t.notes || undefined}
+                                    >
+                                      {t.name}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </label>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               <div className="border-t border-border" />
 
-              {/* ── 2. Exam Date ── */}
+              {/* ── 2. Start Date & Exam Date ── */}
               <div>
                 <Label className="text-lg font-semibold mb-3 flex items-center gap-2">
                   <Calendar className="h-5 w-5" />
-                  Exam Date
+                  Roadmap Dates
                 </Label>
-                <Input
-                  type="date"
-                  value={formData.examDate}
-                  onChange={e => setFormData({ ...formData, examDate: e.target.value })}
-                  min={new Date().toISOString().split('T')[0]}
-                />
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-2">Start date</p>
+                    <Input
+                      type="date"
+                      value={formData.startDate}
+                      onChange={e => setFormData({ ...formData, startDate: e.target.value })}
+                      min={new Date().toISOString().split('T')[0]}
+                      max={formData.examDate || undefined}
+                    />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-2">Exam date</p>
+                    <Input
+                      type="date"
+                      value={formData.examDate}
+                      onChange={e => setFormData({ ...formData, examDate: e.target.value })}
+                      min={formData.startDate || new Date().toISOString().split('T')[0]}
+                    />
+                  </div>
+                </div>
               </div>
 
               <div className="border-t border-border" />
@@ -707,43 +810,48 @@ const RoadmapGenerator = () => {
                 Roadmap Generated Successfully!
               </DialogTitle>
               <DialogDescription>
-                Your personalised study roadmap is ready. Would you like to save it?
+                {generatedRoadmaps.length > 1
+                  ? `${generatedRoadmaps.length} personalised study roadmaps are ready. Would you like to save them?`
+                  : 'Your personalised study roadmap is ready. Would you like to save it?'}
               </DialogDescription>
             </DialogHeader>
 
-            {generatedRoadmap && (
-              <div className="py-4 space-y-4">
-                <div className="p-4 bg-primary/5 rounded-lg border border-primary/20">
-                  <h3 className="font-semibold mb-2">{generatedRoadmap.title}</h3>
-                  <p className="text-sm text-muted-foreground mb-3">{generatedRoadmap.description}</p>
-                  <div className="grid grid-cols-3 gap-3 text-center">
-                    <div>
-                      <div className="text-2xl font-bold text-primary">{generatedRoadmap.totalWeeks}</div>
-                      <div className="text-xs text-muted-foreground">Weeks</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold text-success">{formData.subjects.length}</div>
-                      <div className="text-xs text-muted-foreground">Subjects</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold text-warning">
-                        {generatedRoadmap.weeklyPlans.reduce((s: number, w: any) => s + w.topics.length, 0)}
+            {generatedRoadmaps.length > 0 && (
+              <div className="py-4 space-y-3 max-h-[50vh] overflow-y-auto">
+                {generatedRoadmaps.map(rm => (
+                  <div key={rm.subjectId} className="p-4 bg-primary/5 rounded-lg border border-primary/20">
+                    <h3 className="font-semibold mb-1">{rm.subjectName}</h3>
+                    <p className="text-xs text-muted-foreground mb-3">{rm.title}</p>
+                    <p className="text-sm text-muted-foreground mb-3">{rm.description}</p>
+                    <div className="grid grid-cols-3 gap-3 text-center">
+                      <div>
+                        <div className="text-2xl font-bold text-primary">{rm.totalWeeks}</div>
+                        <div className="text-xs text-muted-foreground">Weeks</div>
                       </div>
-                      <div className="text-xs text-muted-foreground">Topics</div>
+                      <div>
+                        <div className="text-2xl font-bold text-success">{rm.startDate} → {rm.endDate}</div>
+                        <div className="text-xs text-muted-foreground">Date range</div>
+                      </div>
+                      <div>
+                        <div className="text-2xl font-bold text-warning">
+                          {rm.weeklyPlans.reduce((s, w) => s + w.topics.length, 0)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">Topics</div>
+                      </div>
                     </div>
+                    {rm.suggestedSessions && rm.suggestedSessions.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-primary/10">
+                        <p className="text-xs text-muted-foreground">
+                          ✓ {rm.suggestedSessions.length} scheduled sessions generated
+                          (starting {rm.suggestedSessions[0]?.date})
+                        </p>
+                      </div>
+                    )}
                   </div>
-                  {generatedRoadmap.suggestedSessions && generatedRoadmap.suggestedSessions.length > 0 && (
-                    <div className="mt-3 pt-3 border-t border-primary/10">
-                      <p className="text-xs text-muted-foreground">
-                        ✓ {generatedRoadmap.suggestedSessions.length} scheduled sessions generated
-                        (starting {generatedRoadmap.suggestedSessions[0]?.date})
-                      </p>
-                    </div>
-                  )}
-                </div>
+                ))}
 
                 <div className="p-3 bg-success/5 rounded-lg border border-success/20 space-y-1 text-sm">
-                  <p><strong>✓ Saved to Dashboard:</strong> View your roadmap anytime</p>
+                  <p><strong>✓ Saved to Dashboard:</strong> One card per subject, anytime</p>
                   <p><strong>✓ Added to My Subjects:</strong> Track progress per topic</p>
                   {formData.includeBufferDays && (
                     <p><strong>✓ Buffer Week Reserved:</strong> Last week kept for catch-up</p>

@@ -46,6 +46,11 @@ export interface Topic {
 export interface Roadmap {
   id: string;
   userId: string;
+  subjectId?: string;    // optional so pre-existing global roadmap docs still typecheck
+  subjectName?: string;
+  topicTags?: string[];
+  startDate?: string;    // "YYYY-MM-DD"
+  endDate?: string;      // "YYYY-MM-DD" — new docs always set this; old docs fall back to examDate
   title: string;
   description: string;
   subjects: string[];
@@ -77,6 +82,7 @@ export interface Roadmap {
     endTime: string;
     duration: number;
     subject: string;
+    subjectId?: string;
     topic: string;
     status: string;
   }>;
@@ -86,7 +92,9 @@ export interface WeeklyPlan {
   week: number;
   focus: string;
   topics: string[];
+  topicIds?: (string | undefined)[];
   goals: string[];
+  notes?: string;
 }
 
 export interface StudySession {
@@ -265,6 +273,26 @@ export const getLatestRoadmap = async (userId: string, latestRoadmapId?: string)
   )[0];
 };
 
+/**
+ * Groups every roadmap doc for this user by subjectId, keeping only the most
+ * recent one per subject. Docs from before per-subject roadmaps existed (no
+ * subjectId) each bucket under their own `legacy:<id>` key instead of colliding.
+ * Grouping happens client-side deliberately — querying by subjectId + orderBy
+ * would require a Firestore composite index that doesn't exist in this project.
+ */
+export const getLatestRoadmapsBySubject = async (userId: string): Promise<Record<string, Roadmap>> => {
+  const roadmaps = await getRoadmaps(userId);
+  const bySubject: Record<string, Roadmap> = {};
+  for (const r of roadmaps) {
+    const key = r.subjectId ?? `legacy:${r.id}`;
+    const existing = bySubject[key];
+    if (!existing || new Date(r.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
+      bySubject[key] = r;
+    }
+  }
+  return bySubject;
+};
+
 // Study Sessions
 export const saveStudySession = async (userId: string, session: Omit<StudySession, 'id' | 'userId' | 'createdAt'>) => {
   const sessionId = `session_${Date.now()}`;
@@ -306,6 +334,7 @@ type TimetableEntry = {
   endTime: string;
   duration: number;
   subject: string;
+  subjectId?: string;
   topic: string;
   status: string;
 };
@@ -333,7 +362,7 @@ export const createSessionsFromRoadmap = async (
     batch.set(ref, removeUndefined({
       userId,
       roadmapId,
-      subjectId: '',
+      subjectId: s.subjectId ?? '',
       subjectName: s.subject,
       topic: s.topic,
       duration: s.duration,
@@ -354,11 +383,28 @@ export const getStudySessionsByDate = async (userId: string, date: string): Prom
 };
 
 // User Preferences
+export interface GoalItem {
+  id: string;
+  text: string;
+  completed: boolean;
+  createdAt: string;
+}
+
+export interface ChecklistItem {
+  id: string;
+  text: string;
+  completed: boolean;
+}
+
 export interface UserPreferences {
   userId: string;
   totalStudyHours: number;
   weeklyGoal: number;
   dailyGoal: number;
+  myGoals?: GoalItem[];
+  // A single day's AI-suggested checklist — only ever holds "today's" list
+  // (keyed by date so a new day naturally replaces it, not a growing history).
+  todayChecklist?: { date: string; items: ChecklistItem[] };
   updatedAt: string;
 }
 

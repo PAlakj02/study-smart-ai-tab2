@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
-import { StudyRoadmap, TimetableBlock } from '@/services/geminiService';
+import { StudyRoadmap, TimetableBlock, WeekPlan } from '@/services/geminiService';
 import { findNextAvailableSlot, SchedulingParams } from '@/services/scheduleUtils';
 import { calculateCurrentStreak, calculateBestStreak } from '@/services/streakUtils';
 import { useAuth } from './AuthContext';
@@ -73,16 +73,19 @@ interface StudyDataContextType {
   preferences: StudyPreferences;
   totalStudyHours: number;
   roadmap: StudyRoadmap | null;
+  roadmapsBySubjectId: Record<string, StudyRoadmap>;
+  legacyRoadmaps: StudyRoadmap[];
   loading: boolean;
   currentStreak: number;
   bestStreak: number;
   completedToday: boolean;
-  addSubject: (subject: Omit<Subject, 'id' | 'totalTopics' | 'completedTopics' | 'progress'>) => Promise<void>;
+  addSubject: (subject: Omit<Subject, 'id' | 'totalTopics' | 'completedTopics' | 'progress'> & { id?: string }) => Promise<void>;
   updateSubject: (id: string, subject: Partial<Subject>) => Promise<void>;
   deleteSubject: (id: string) => Promise<void>;
   addChapter: (subjectId: string, chapter: Omit<Chapter, 'id' | 'progress'>) => Promise<void>;
   updateChapter: (subjectId: string, chapterId: string, chapter: Partial<Chapter>) => Promise<void>;
   addTopic: (subjectId: string, chapterId: string, topic: Omit<Topic, 'id'>) => Promise<void>;
+  addSubjectTopic: (subjectId: string, topic: { name: string; description?: string; timeAllocated: number }) => Promise<void>;
   updateTopic: (subjectId: string, chapterId: string, topicId: string, topic: Partial<Topic>) => Promise<void>;
   updateTopicStatus: (subjectId: string, chapterId: string, topicId: string, status: TopicStatus) => Promise<void>;
   addSession: (session: Omit<StudySession, 'id'>) => Promise<void>;
@@ -95,8 +98,20 @@ interface StudyDataContextType {
   rescheduleSession: (sessionId: string) => Promise<void>;
   updatePreferences: (preferences: Partial<StudyPreferences>) => Promise<void>;
   saveRoadmap: (roadmap: StudyRoadmap) => Promise<void>;
+  updateRoadmapWeek: (
+    subjectId: string,
+    weekIndex: number,
+    weekUpdates: Partial<Pick<WeekPlan, 'focus' | 'topics' | 'topicIds' | 'goals' | 'notes'>>,
+  ) => Promise<void>;
   clearRoadmap: () => Promise<void>;
   refreshData: () => Promise<void>;
+  myGoals: firestoreService.GoalItem[];
+  addGoal: (text: string) => Promise<void>;
+  toggleGoal: (id: string) => Promise<void>;
+  removeGoal: (id: string) => Promise<void>;
+  todayChecklist: { date: string; items: firestoreService.ChecklistItem[] } | null;
+  setTodayChecklistItems: (date: string, items: firestoreService.ChecklistItem[]) => Promise<void>;
+  toggleChecklistItem: (id: string) => Promise<void>;
 }
 
 const StudyDataContext = createContext<StudyDataContextType | undefined>(undefined);
@@ -118,7 +133,28 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
   });
   const [totalStudyHours, setTotalStudyHours] = useState(0);
   const [roadmap, setRoadmap] = useState<StudyRoadmap | null>(null);
+  const [roadmapsBySubjectId, setRoadmapsBySubjectId] = useState<Record<string, StudyRoadmap>>({});
+  const [legacyRoadmaps, setLegacyRoadmaps] = useState<StudyRoadmap[]>([]);
+  const [myGoals, setMyGoals] = useState<firestoreService.GoalItem[]>([]);
+  const [todayChecklist, setTodayChecklist] = useState<{ date: string; items: firestoreService.ChecklistItem[] } | null>(null);
   const [loading, setLoading] = useState(true);
+
+  /** Splits the subjectId-keyed map from firestoreService into real-subject vs legacy buckets,
+   *  and derives the singular "most recent" roadmap kept for backward-compatible readers. */
+  const applyRoadmapsBySubject = (bySubjectId: Record<string, firestoreService.Roadmap>) => {
+    const map: Record<string, StudyRoadmap> = {};
+    const legacy: StudyRoadmap[] = [];
+    for (const [key, r] of Object.entries(bySubjectId)) {
+      const asStudyRoadmap = r as unknown as StudyRoadmap;
+      if (key.startsWith('legacy:')) legacy.push(asStudyRoadmap);
+      else map[key] = asStudyRoadmap;
+    }
+    setRoadmapsBySubjectId(map);
+    setLegacyRoadmaps(legacy);
+    const mostRecent = [...Object.values(map), ...legacy]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    setRoadmap(mostRecent ?? null);
+  };
 
   // Load all data from Firestore when user authenticates
   useEffect(() => {
@@ -127,7 +163,11 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         setSubjects([]);
         setSessions([]);
         setRoadmap(null);
+        setRoadmapsBySubjectId({});
+        setLegacyRoadmaps([]);
         setTotalStudyHours(0);
+        setMyGoals([]);
+        setTodayChecklist(null);
         setLoading(false);
         return;
       }
@@ -135,18 +175,15 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
       try {
         setLoading(true);
 
-        const [userSubjects, userSessions, userPrefs] = await Promise.all([
+        const [userSubjects, userSessions, userPrefs, roadmapsBySubject] = await Promise.all([
           firestoreService.getSubjects(user.id),
           firestoreService.getStudySessions(user.id),
           firestoreService.getUserPreferences(user.id),
+          firestoreService.getLatestRoadmapsBySubject(user.id),
         ]);
-        // Use cached latestRoadmapId from prefs to avoid fetching all roadmap docs
-        const latestRoadmap = await firestoreService.getLatestRoadmap(
-          user.id,
-          (userPrefs as any)?.latestRoadmapId,
-        );
 
         setSubjects(userSubjects);
+        applyRoadmapsBySubject(roadmapsBySubject);
         setSessions(userSessions.map(s => ({
           id: s.id,
           subjectId: s.subjectId,
@@ -161,10 +198,6 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
           roadmapId: s.roadmapId,
         })));
 
-        if (latestRoadmap) {
-          setRoadmap(latestRoadmap as unknown as StudyRoadmap);
-        }
-
         if (userPrefs?.totalStudyHours !== undefined) {
           setTotalStudyHours(userPrefs.totalStudyHours);
         } else {
@@ -174,6 +207,9 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
             await firestoreService.saveUserPreferences(user.id, { totalStudyHours: totalHours });
           }
         }
+
+        setMyGoals(userPrefs?.myGoals ?? []);
+        setTodayChecklist(userPrefs?.todayChecklist ?? null);
       } catch (error) {
         console.error('Error loading user data:', error);
         toast.error('Failed to load your data');
@@ -215,15 +251,15 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const addSubject = async (subject: Omit<Subject, 'id' | 'totalTopics' | 'completedTopics' | 'progress'>) => {
+  const addSubject = async (subject: Omit<Subject, 'id' | 'totalTopics' | 'completedTopics' | 'progress'> & { id?: string }) => {
     if (!user) return;
 
     // Firestore rejects undefined values — strip examDate if empty
-    const { examDate, ...rest } = subject as typeof subject & { examDate?: string };
+    const { examDate, id, ...rest } = subject as typeof subject & { examDate?: string; id?: string };
     const newSubject = {
       ...rest,
       ...(examDate ? { examDate } : {}),
-      id: `subject_${Date.now()}`,
+      id: id ?? `subject_${Date.now()}`,
       userId: user.id,
       totalTopics: 0,
       completedTopics: 0,
@@ -259,9 +295,14 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
       await firestoreService.deleteSubject(id);
       const updatedSubjects = subjects.filter(s => s.id !== id);
       setSubjects(updatedSubjects);
-      if (updatedSubjects.length === 0 && roadmap?.id) {
-        setRoadmap(null);
-        await firestoreService.deleteRoadmap(roadmap.id);
+      const subjectRoadmap = roadmapsBySubjectId[id];
+      if (subjectRoadmap?.id) {
+        await firestoreService.deleteRoadmap(subjectRoadmap.id);
+        setRoadmapsBySubjectId(prev => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
       }
       toast.success('Subject deleted');
     } catch (error) {
@@ -315,6 +356,52 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     const updatedChapters = subject.chapters.map(c =>
       c.id === chapterId ? { ...c, topics: [...c.topics, newTopic] } : c,
     );
+
+    const totalTopics = updatedChapters.reduce((sum, c) => sum + c.topics.length, 0);
+    const completedTopics = updatedChapters.reduce(
+      (sum, c) => sum + c.topics.filter(t => t.status === 'completed').length,
+      0,
+    );
+    const progress = totalTopics > 0 ? Math.round((completedTopics / totalTopics) * 100) : 0;
+
+    try {
+      await firestoreService.updateSubject(subjectId, { chapters: updatedChapters, totalTopics, completedTopics, progress } as any);
+      setSubjects(prev =>
+        prev.map(s => s.id === subjectId ? { ...s, chapters: updatedChapters, totalTopics, completedTopics, progress } : s),
+      );
+      toast.success('Topic added');
+    } catch (error) {
+      console.error('Error adding topic:', error);
+      toast.error('Failed to add topic');
+    }
+  };
+
+  /** Default chapter id used to hold all user-added topics for a subject — an
+   *  internal implementation detail; the UI only ever presents Subject → Topics. */
+  const defaultChapterId = (subjectId: string) => `${subjectId}__default`;
+
+  const addSubjectTopic = async (
+    subjectId: string,
+    topic: { name: string; description?: string; timeAllocated: number },
+  ) => {
+    if (!user) return;
+    const subject = subjects.find(s => s.id === subjectId);
+    if (!subject) return;
+
+    const chapterId = defaultChapterId(subjectId);
+    const newTopic: Topic = {
+      id: `${chapterId}-${Date.now()}`,
+      name: topic.name,
+      status: 'pending',
+      timeAllocated: topic.timeAllocated,
+      timeSpent: 0,
+      notes: topic.description || undefined,
+    };
+
+    const hasDefaultChapter = subject.chapters.some(c => c.id === chapterId);
+    const updatedChapters = hasDefaultChapter
+      ? subject.chapters.map(c => c.id === chapterId ? { ...c, topics: [...c.topics, newTopic] } : c)
+      : [...subject.chapters, { id: chapterId, name: 'Topics', difficulty: 'medium' as ChapterDifficulty, length: 'medium' as ChapterLength, topics: [newTopic], progress: 0 }];
 
     const totalTopics = updatedChapters.reduce((sum, c) => sum + c.topics.length, 0);
     const completedTopics = updatedChapters.reduce(
@@ -603,6 +690,76 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  // ── My Goals — a small persistent personal checklist, stored alongside the
+  //    user's other preferences (no new collection needed) ──────────────────
+  const addGoal = async (text: string) => {
+    if (!user || !text.trim()) return;
+    const newGoal: firestoreService.GoalItem = {
+      id: `goal_${Date.now()}`,
+      text: text.trim(),
+      completed: false,
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [...myGoals, newGoal];
+    setMyGoals(updated);
+    try {
+      await firestoreService.saveUserPreferences(user.id, { myGoals: updated });
+    } catch (error) {
+      console.error('Error saving goal:', error);
+      toast.error('Failed to save goal');
+    }
+  };
+
+  const toggleGoal = async (id: string) => {
+    if (!user) return;
+    const updated = myGoals.map(g => g.id === id ? { ...g, completed: !g.completed } : g);
+    setMyGoals(updated);
+    try {
+      await firestoreService.saveUserPreferences(user.id, { myGoals: updated });
+    } catch (error) {
+      console.error('Error updating goal:', error);
+      toast.error('Failed to update goal');
+    }
+  };
+
+  const removeGoal = async (id: string) => {
+    if (!user) return;
+    const updated = myGoals.filter(g => g.id !== id);
+    setMyGoals(updated);
+    try {
+      await firestoreService.saveUserPreferences(user.id, { myGoals: updated });
+    } catch (error) {
+      console.error('Error removing goal:', error);
+      toast.error('Failed to remove goal');
+    }
+  };
+
+  // ── Today's Checklist — a single persisted day's AI-suggested checklist.
+  //    Replaced wholesale (not accumulated) whenever the date rolls over. ────
+  const setTodayChecklistItems = async (date: string, items: firestoreService.ChecklistItem[]) => {
+    if (!user) return;
+    const value = { date, items };
+    setTodayChecklist(value);
+    try {
+      await firestoreService.saveUserPreferences(user.id, { todayChecklist: value });
+    } catch (error) {
+      console.error('Error saving checklist:', error);
+      toast.error('Failed to save checklist');
+    }
+  };
+
+  const toggleChecklistItem = async (id: string) => {
+    if (!user || !todayChecklist) return;
+    const updated = { ...todayChecklist, items: todayChecklist.items.map(i => i.id === id ? { ...i, completed: !i.completed } : i) };
+    setTodayChecklist(updated);
+    try {
+      await firestoreService.saveUserPreferences(user.id, { todayChecklist: updated });
+    } catch (error) {
+      console.error('Error updating checklist item:', error);
+      toast.error('Failed to update checklist');
+    }
+  };
+
   const saveRoadmap = async (newRoadmap: StudyRoadmap) => {
     if (!user) throw new Error('Not authenticated');
 
@@ -613,7 +770,11 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
 
     const roadmapId = await firestoreService.saveRoadmap(user.id, roadmapForFirestore as any);
     // Update context state only after successful Firestore write
-    setRoadmap({ ...newRoadmap, id: roadmapId });
+    const savedRoadmap = { ...newRoadmap, id: roadmapId };
+    setRoadmap(savedRoadmap);
+    if (savedRoadmap.subjectId) {
+      setRoadmapsBySubjectId(prev => ({ ...prev, [savedRoadmap.subjectId]: savedRoadmap }));
+    }
 
     // Persist session blocks (idempotent — skips if already seeded)
     if (suggestedSessions && suggestedSessions.length > 0) {
@@ -645,6 +806,41 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     // Caller is responsible for showing the success toast
   };
 
+  // ── Edit a single week of an already-saved roadmap (focus, topics, goals,
+  //    notes) — reuses the existing roadmap doc + updateRoadmap, no new
+  //    collection. Updates local state first so the UI (this panel, the week
+  //    timeline, "This Week" progress) reflects the change immediately;
+  //    already-generated calendar sessions for that week are NOT rewritten,
+  //    since that would mean deleting/recreating session docs and their
+  //    completion history rather than editing a field. ─────────────────────
+  const updateRoadmapWeek = async (
+    subjectId: string,
+    weekIndex: number,
+    weekUpdates: Partial<Pick<WeekPlan, 'focus' | 'topics' | 'topicIds' | 'goals' | 'notes'>>,
+  ) => {
+    if (!user) return;
+    const existing = roadmapsBySubjectId[subjectId];
+    if (!existing || !existing.weeklyPlans[weekIndex]) return;
+
+    const updatedWeeklyPlans = existing.weeklyPlans.map((w, i) =>
+      i === weekIndex ? { ...w, ...weekUpdates } : w,
+    );
+    const updatedRoadmap = { ...existing, weeklyPlans: updatedWeeklyPlans };
+
+    setRoadmapsBySubjectId(prev => ({ ...prev, [subjectId]: updatedRoadmap }));
+    if (roadmap?.id === existing.id) setRoadmap(updatedRoadmap);
+
+    try {
+      await firestoreService.updateRoadmap(existing.id, { weeklyPlans: updatedWeeklyPlans } as any);
+      toast.success('Week updated');
+    } catch (error) {
+      console.error('Error updating week:', error);
+      toast.error('Failed to save week — reverting');
+      setRoadmapsBySubjectId(prev => ({ ...prev, [subjectId]: existing }));
+      if (roadmap?.id === existing.id) setRoadmap(existing);
+    }
+  };
+
   const clearRoadmap = async () => {
     if (!user || !roadmap) return;
     try {
@@ -672,6 +868,8 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         preferences,
         totalStudyHours,
         roadmap,
+        roadmapsBySubjectId,
+        legacyRoadmaps,
         loading,
         currentStreak,
         bestStreak,
@@ -682,6 +880,7 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         addChapter,
         updateChapter,
         addTopic,
+        addSubjectTopic,
         updateTopic,
         updateTopicStatus,
         addSession,
@@ -694,8 +893,16 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         rescheduleSession,
         updatePreferences,
         saveRoadmap,
+        updateRoadmapWeek,
         clearRoadmap,
         refreshData,
+        myGoals,
+        addGoal,
+        toggleGoal,
+        removeGoal,
+        todayChecklist,
+        setTodayChecklistItems,
+        toggleChecklistItem,
       }}
     >
       {children}

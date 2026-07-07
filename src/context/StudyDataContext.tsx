@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
+import { createContext, useContext, useState, useMemo, ReactNode, useEffect } from 'react';
 import { StudyRoadmap, WeekPlan, generateSessionsFromRoadmap } from '@/services/geminiService';
 import { findNextAvailableSlot, SchedulingParams } from '@/services/scheduleUtils';
 import { calculateCurrentStreak, calculateBestStreak } from '@/services/streakUtils';
@@ -138,7 +138,15 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     studyStyle: 'long',
     topicOrder: 'hard-first',
   });
-  const [totalStudyHours, setTotalStudyHours] = useState(0);
+  // Derived, not stored — always the real sum of completed sessions' minutes,
+  // recomputed whenever `sessions` changes. Previously this was a hand-
+  // maintained counter seeded once from EVERY session's duration (including
+  // future/not-yet-completed ones) and then incremented on each completion,
+  // which could show hours for work that was only scheduled, never done.
+  const totalStudyHours = useMemo(
+    () => Math.round(sessions.filter(s => s.completed).reduce((sum, s) => sum + s.duration, 0) / 60),
+    [sessions],
+  );
   const [roadmap, setRoadmap] = useState<StudyRoadmap | null>(null);
   const [roadmapsBySubjectId, setRoadmapsBySubjectId] = useState<Record<string, StudyRoadmap>>({});
   const [legacyRoadmaps, setLegacyRoadmaps] = useState<StudyRoadmap[]>([]);
@@ -202,7 +210,6 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         setRoadmap(null);
         setRoadmapsBySubjectId({});
         setLegacyRoadmaps([]);
-        setTotalStudyHours(0);
         setMyGoals([]);
         setTodayChecklist(null);
         setLoading(false);
@@ -222,17 +229,6 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         setSubjects(userSubjects);
         applyRoadmapsBySubject(roadmapsBySubject);
         setSessions(mapSessions(userSessions));
-
-        if (userPrefs?.totalStudyHours !== undefined) {
-          setTotalStudyHours(userPrefs.totalStudyHours);
-        } else {
-          const totalHours = Math.round(userSessions.reduce((sum, s) => sum + s.duration, 0) / 60);
-          setTotalStudyHours(totalHours);
-          if (totalHours > 0) {
-            await firestoreService.saveUserPreferences(user.id, { totalStudyHours: totalHours });
-          }
-        }
-
         setMyGoals(userPrefs?.myGoals ?? []);
         setTodayChecklist(userPrefs?.todayChecklist ?? null);
       } catch (error) {
@@ -249,16 +245,12 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
   const refreshData = async () => {
     if (!user) return;
     try {
-      const [userSubjects, userSessions, userPrefs] = await Promise.all([
+      const [userSubjects, userSessions] = await Promise.all([
         firestoreService.getSubjects(user.id),
         firestoreService.getStudySessions(user.id),
-        firestoreService.getUserPreferences(user.id),
       ]);
       setSubjects(userSubjects);
       setSessions(mapSessions(userSessions));
-      if (userPrefs?.totalStudyHours !== undefined) {
-        setTotalStudyHours(userPrefs.totalStudyHours);
-      }
     } catch (error) {
       console.error('Error refreshing data:', error);
     }
@@ -474,11 +466,12 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
 
     await updateTopic(subjectId, chapterId, topicId, { status });
 
+    // Total Study Hours is derived purely from completed *sessions* (see the
+    // totalStudyHours useMemo above) — marking a topic's status here doesn't
+    // credit hours on its own, since that would double-count time already
+    // credited when its scheduled sessions get marked complete.
     if (status === 'completed' && previousStatus !== 'completed' && topic?.timeAllocated) {
-      const newTotalHours = Math.round((totalStudyHours * 60 + topic.timeAllocated) / 60);
-      setTotalStudyHours(newTotalHours);
-      await firestoreService.saveUserPreferences(user.id, { totalStudyHours: newTotalHours });
-      toast.success(`Great! +${topic.timeAllocated} minutes added to your study hours! 🎉`);
+      toast.success('Topic marked as complete! 🎉');
     }
   };
 
@@ -503,11 +496,9 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         completed: session.completed ?? true,
       });
 
+      // totalStudyHours picks this up automatically since it's derived from
+      // `sessions` — no separate counter to update.
       setSessions(prev => [...prev, newSession]);
-
-      const newTotalHours = Math.round((totalStudyHours * 60 + session.duration) / 60);
-      setTotalStudyHours(newTotalHours);
-      await firestoreService.saveUserPreferences(user.id, { totalStudyHours: newTotalHours });
     } catch (error) {
       console.error('Error adding session:', error);
       toast.error('Failed to save study session');
@@ -531,13 +522,8 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     try {
       await firestoreService.updateStudySession(sessionId, { completed: true, status: 'completed' });
 
-      // Credit study hours for completing a scheduled session
-      if (session.duration && user) {
-        const newTotalHours = Math.round((totalStudyHours * 60 + session.duration) / 60);
-        setTotalStudyHours(newTotalHours);
-        await firestoreService.saveUserPreferences(user.id, { totalStudyHours: newTotalHours });
-      }
-
+      // totalStudyHours recomputes on its own from the `sessions` state
+      // update above — no separate counter to credit.
       toast.success('Session completed! 🎉', {
         description: `+${session.duration} min added to your study hours`,
       });

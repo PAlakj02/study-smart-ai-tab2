@@ -449,7 +449,10 @@ export interface ChecklistItem {
 
 export interface UserPreferences {
   userId: string;
-  totalStudyHours: number;
+  // Legacy field from when "Total Study Hours" was a hand-maintained counter.
+  // No longer read or written — it's now derived live from completed
+  // studySessions durations. Kept optional only so old docs still typecheck.
+  totalStudyHours?: number;
   weeklyGoal: number;
   dailyGoal: number;
   myGoals?: GoalItem[];

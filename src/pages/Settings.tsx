@@ -5,6 +5,7 @@ import { useAuth } from '@/context/AuthContext';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { ArrowLeft, User, Timer } from "lucide-react";
 import { toast } from 'sonner';
 
@@ -67,20 +68,20 @@ const Settings = () => {
               <div className="space-y-4">
                 <div>
                   <Label>Display Name</Label>
-                  <input
+                  <Input
                     type="text"
                     value={user?.name || ''}
                     readOnly
-                    className="w-full mt-1 px-3 py-2 bg-background border border-input rounded-md"
+                    className="mt-1"
                   />
                 </div>
                 <div>
                   <Label>Email</Label>
-                  <input
+                  <Input
                     type="email"
                     value={user?.email || ''}
                     readOnly
-                    className="w-full mt-1 px-3 py-2 bg-background border border-input rounded-md"
+                    className="mt-1"
                   />
                 </div>
               </div>

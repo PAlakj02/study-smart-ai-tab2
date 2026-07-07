@@ -5,6 +5,7 @@ import { useStudyData } from '@/context/StudyDataContext';
 import { useAuth } from '@/context/AuthContext';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { MobileNavMenu } from '@/components/MobileNavMenu';
 import { Progress } from '@/components/ui/progress';
 import {
   ArrowLeft, Flame, Star, Trophy, Clock, CheckCircle2,
@@ -182,6 +183,17 @@ const Motivation = () => {
               <Button variant="ghost" size="icon" onClick={() => navigate('/settings')}><Settings className="h-5 w-5" /></Button>
               <Button variant="ghost" size="icon" onClick={handleLogout}><LogOut className="h-5 w-5" /></Button>
             </div>
+            <MobileNavMenu
+              items={[
+                { label: 'Dashboard', path: '/dashboard' },
+                { label: 'Calendar', path: '/calendar' },
+                { label: 'AI Roadmap', path: '/roadmap' },
+                { label: 'Parent View', path: '/parent' },
+                { label: 'Tutorial', path: '/tutorial' },
+                { label: 'My Subjects', path: '/subjects' },
+              ]}
+              onLogout={handleLogout}
+            />
           </div>
         </div>
       </header>

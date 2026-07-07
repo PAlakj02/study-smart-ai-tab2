@@ -417,7 +417,6 @@ const RoadmapGenerator = () => {
                       onChange={e => setFormData({ ...formData, endDate: e.target.value })}
                       min={formData.startDate || new Date().toISOString().split('T')[0]}
                     />
-                    <p className="text-xs text-muted-foreground mt-1">When the study schedule finishes</p>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground mb-2">Exam date</p>
@@ -427,7 +426,6 @@ const RoadmapGenerator = () => {
                       onChange={e => setFormData({ ...formData, examDate: e.target.value })}
                       min={formData.startDate || new Date().toISOString().split('T')[0]}
                     />
-                    <p className="text-xs text-muted-foreground mt-1">The actual exam — may be after the schedule ends</p>
                   </div>
                 </div>
               </div>
@@ -465,7 +463,7 @@ const RoadmapGenerator = () => {
                   max="12"
                   value={formData.studyHoursPerDay}
                   onChange={e => setFormData({ ...formData, studyHoursPerDay: parseInt(e.target.value) })}
-                  className="w-full"
+                  className="w-full accent-primary cursor-pointer"
                 />
                 <div className="flex justify-between text-sm text-muted-foreground mt-1">
                   <span>1 hour</span>
@@ -554,7 +552,7 @@ const RoadmapGenerator = () => {
                       onChange={e =>
                         setFormData({ ...formData, sessionLengthMinutes: parseInt(e.target.value) })
                       }
-                      className="w-full"
+                      className="w-full accent-primary cursor-pointer"
                     />
                     <div className="flex justify-between text-xs text-muted-foreground mt-1">
                       <span>15 min</span>
@@ -576,7 +574,7 @@ const RoadmapGenerator = () => {
                       onChange={e =>
                         setFormData({ ...formData, breakLengthMinutes: parseInt(e.target.value) })
                       }
-                      className="w-full"
+                      className="w-full accent-primary cursor-pointer"
                     />
                     <div className="flex justify-between text-xs text-muted-foreground mt-1">
                       <span>5 min</span>
@@ -843,20 +841,20 @@ const RoadmapGenerator = () => {
                     <h3 className="font-semibold mb-1">{rm.subjectName}</h3>
                     <p className="text-xs text-muted-foreground mb-3">{rm.title}</p>
                     <p className="text-sm text-muted-foreground mb-3">{rm.description}</p>
-                    <div className="grid grid-cols-3 gap-3 text-center">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-center">
                       <div>
                         <div className="text-2xl font-bold text-primary">{rm.totalWeeks}</div>
                         <div className="text-xs text-muted-foreground">Weeks</div>
-                      </div>
-                      <div>
-                        <div className="text-2xl font-bold text-success">{rm.startDate} → {rm.endDate}</div>
-                        <div className="text-xs text-muted-foreground">Date range</div>
                       </div>
                       <div>
                         <div className="text-2xl font-bold text-warning">
                           {rm.weeklyPlans.reduce((s, w) => s + w.topics.length, 0)}
                         </div>
                         <div className="text-xs text-muted-foreground">Topics</div>
+                      </div>
+                      <div className="col-span-2 sm:col-span-1">
+                        <div className="text-sm font-semibold text-success break-words">{rm.startDate} → {rm.endDate}</div>
+                        <div className="text-xs text-muted-foreground">Date range</div>
                       </div>
                     </div>
                     {rm.examDate && (

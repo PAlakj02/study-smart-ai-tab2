@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { MobileNavMenu } from '@/components/MobileNavMenu';
 import {
   ArrowLeft, BookOpen, CalendarDays, Sparkles, CheckSquare,
   Settings, LogOut, ChevronDown, ChevronUp, Brain, Clock,
@@ -201,6 +202,16 @@ const Tutorial = () => {
               <Button variant="ghost" size="icon" onClick={() => navigate('/settings')}><Settings className="h-5 w-5" /></Button>
               <Button variant="ghost" size="icon" onClick={handleLogout}><LogOut className="h-5 w-5" /></Button>
             </div>
+            <MobileNavMenu
+              items={[
+                { label: 'Dashboard', path: '/dashboard' },
+                { label: 'AI Roadmap', path: '/roadmap' },
+                { label: 'Calendar', path: '/calendar' },
+                { label: 'Motivation', path: '/motivation' },
+                { label: 'Parent View', path: '/parent' },
+              ]}
+              onLogout={handleLogout}
+            />
           </div>
         </div>
       </header>

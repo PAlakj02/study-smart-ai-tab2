@@ -6,6 +6,7 @@ import { useAuth } from '@/context/AuthContext';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
+import { MobileNavMenu } from '@/components/MobileNavMenu';
 import {
   ArrowLeft, Clock, Flame, Trophy, BookOpen, Target,
   AlertTriangle, CheckCircle2, CalendarDays, Settings, LogOut,
@@ -132,6 +133,15 @@ const ParentProgress = () => {
               <Button variant="ghost" size="icon" onClick={() => navigate('/settings')}><Settings className="h-5 w-5" /></Button>
               <Button variant="ghost" size="icon" onClick={handleLogout}><LogOut className="h-5 w-5" /></Button>
             </div>
+            <MobileNavMenu
+              items={[
+                { label: 'Dashboard', path: '/dashboard' },
+                { label: 'Calendar', path: '/calendar' },
+                { label: 'Motivation', path: '/motivation' },
+                { label: 'Tutorial', path: '/tutorial' },
+              ]}
+              onLogout={handleLogout}
+            />
           </div>
         </div>
       </header>

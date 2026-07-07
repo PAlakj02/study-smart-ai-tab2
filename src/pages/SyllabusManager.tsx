@@ -122,13 +122,13 @@ const SyllabusManager = () => {
       {/* Header */}
       <header className="border-b border-border bg-surface/50 backdrop-blur-sm sticky top-0 z-10">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-y-2">
             <div className="flex items-center gap-4">
               <Button variant="ghost" size="icon" onClick={() => navigate('/dashboard')}>
                 <ArrowLeft className="h-5 w-5" />
               </Button>
               <div>
-                <h1 className="text-2xl font-bold">My Subjects</h1>
+                <h1 className="text-xl sm:text-2xl font-bold">My Subjects</h1>
                 <p className="text-sm text-muted-foreground">Add subjects and topics — your syllabus, in your own words</p>
               </div>
             </div>

@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { useStudyData } from "@/context/StudyDataContext";
+import { MobileNavMenu } from "@/components/MobileNavMenu";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -399,12 +400,25 @@ const Dashboard = () => {
               <Button variant="ghost" size="icon" onClick={() => navigate('/study-session')} title="Pomodoro Timer">
                 <Timer className="h-5 w-5" />
               </Button>
-              <Button variant="ghost" size="icon" onClick={() => navigate('/settings')}>
+              <Button variant="ghost" size="icon" className="hidden md:inline-flex" onClick={() => navigate('/settings')}>
                 <Settings className="h-5 w-5" />
               </Button>
-              <Button variant="ghost" size="icon" onClick={handleLogout}>
+              <Button variant="ghost" size="icon" className="hidden md:inline-flex" onClick={handleLogout}>
                 <LogOut className="h-5 w-5" />
               </Button>
+              <MobileNavMenu
+                items={[
+                  { label: 'Dashboard', path: '/dashboard' },
+                  { label: 'AI Roadmap', path: '/roadmap' },
+                  { label: 'Calendar', path: '/calendar' },
+                  { label: 'Motivation', path: '/motivation' },
+                  { label: 'Parent View', path: '/parent' },
+                  { label: 'Tutorial', path: '/tutorial' },
+                  { label: 'My Subjects', path: '/subjects' },
+                  { label: 'Analytics', path: '/analytics' },
+                ]}
+                onLogout={handleLogout}
+              />
             </div>
           </div>
         </div>
@@ -959,7 +973,7 @@ const Dashboard = () => {
                   <h3 className="font-semibold text-sm">My Goals</h3>
                 </div>
                 <div className="flex gap-2 mb-3">
-                  <input
+                  <Input
                     type="text"
                     value={newGoalText}
                     onChange={e => setNewGoalText(e.target.value)}
@@ -970,7 +984,7 @@ const Dashboard = () => {
                       }
                     }}
                     placeholder="e.g. Finish notes, Solve Assignment 2…"
-                    className="flex-1 px-3 py-1.5 text-sm bg-background border border-input rounded-md"
+                    className="flex-1 h-9 text-sm"
                   />
                   <Button
                     size="sm"

@@ -97,24 +97,11 @@ function effectiveStatus(s: StudySession): string {
 const StudyCalendar: React.FC = () => {
   const navigate = useNavigate();
   const { logout } = useAuth();
-  const { sessions, subjects, roadmap, roadmapsBySubjectId, legacyRoadmaps, loading, completeStudySession, markSessionMissed, markSessionSkipped, rescheduleSession, updateStudySession, currentStreak, bestStreak } = useStudyData();
+  // `sessions` is the single source of truth shared with Dashboard/Analytics —
+  // StudyDataContext re-syncs it from Firestore after every roadmap create/
+  // edit/delete, so it's read here directly with no page-local filtering.
+  const { sessions, subjects, roadmap, loading, completeStudySession, markSessionMissed, markSessionSkipped, rescheduleSession, updateStudySession, currentStreak, bestStreak } = useStudyData();
   const isNDPlan = !!(roadmap as { neurodivergentSupport?: boolean } | null)?.neurodivergentSupport;
-
-  // Belt-and-suspenders against orphaned events: a session is only "live" if
-  // it has no roadmapId at all (manually added) or its roadmapId still points
-  // at a roadmap that's actually tracked as current — per-subject or legacy
-  // (pre-subjectId) — for its subject. This way the Calendar can never keep
-  // rendering a deleted/superseded roadmap's sessions, even if some other
-  // code path fails to clean up the underlying studySessions docs — it
-  // always reflects the latest known data, not a stale snapshot.
-  const liveRoadmapIds = useMemo(
-    () => new Set([...Object.values(roadmapsBySubjectId), ...legacyRoadmaps].map(r => r.id)),
-    [roadmapsBySubjectId, legacyRoadmaps],
-  );
-  const liveSessions = useMemo(
-    () => sessions.filter(s => !s.roadmapId || liveRoadmapIds.has(s.roadmapId)),
-    [sessions, liveRoadmapIds],
-  );
 
   const today = new Date();
   const todayStr = toDateStr(today);
@@ -126,13 +113,13 @@ const StudyCalendar: React.FC = () => {
   // ── Build date → session[] map ────────────────────────────────────────────
   const sessionsByDate = useMemo(() => {
     const map = new Map<string, StudySession[]>();
-    for (const s of liveSessions) {
+    for (const s of sessions) {
       const key = s.date.substring(0, 10);
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(s);
     }
     return map;
-  }, [liveSessions]);
+  }, [sessions]);
 
   // ── Month grid ────────────────────────────────────────────────────────────
   const grid = useMemo(() => makeMonthGrid(viewYear, viewMonth), [viewYear, viewMonth]);
@@ -140,8 +127,8 @@ const StudyCalendar: React.FC = () => {
   // ── Month-level stats ─────────────────────────────────────────────────────
   const monthPrefix = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`;
   const thisMonthSessions = useMemo(
-    () => liveSessions.filter(s => s.date.startsWith(monthPrefix)),
-    [liveSessions, monthPrefix],
+    () => sessions.filter(s => s.date.startsWith(monthPrefix)),
+    [sessions, monthPrefix],
   );
   const completedThisMonth = thisMonthSessions.filter(s => s.completed).length;
   const pendingThisMonth   = thisMonthSessions.length - completedThisMonth;
@@ -220,7 +207,7 @@ const StudyCalendar: React.FC = () => {
   const [editEndTime, setEditEndTime] = useState('');
   const [editTopic, setEditTopic] = useState('');
 
-  const editingSession = liveSessions.find(s => s.id === editSessionId) ?? null;
+  const editingSession = sessions.find(s => s.id === editSessionId) ?? null;
 
   const openEditSession = (session: StudySession) => {
     setEditSessionId(session.id);
@@ -845,7 +832,7 @@ const StudyCalendar: React.FC = () => {
             </Dialog>
 
             {/* ── No sessions at all — CTA ── */}
-            {liveSessions.length === 0 && (
+            {sessions.length === 0 && (
               <Card className="p-8 text-center bg-gradient-to-r from-primary/5 to-secondary/5 border-primary/20">
                 <div className="h-16 w-16 rounded-full gradient-primary flex items-center justify-center mx-auto mb-4">
                   <Sparkles className="h-8 w-8 text-white" />

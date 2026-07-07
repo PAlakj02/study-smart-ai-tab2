@@ -230,15 +230,25 @@ export const deleteRoadmap = async (roadmapId: string) => {
   await deleteDoc(roadmapRef);
 };
 
+/** Runs write/delete operations across as many batches as needed to stay under
+ *  Firestore's 500-ops-per-batch limit — a roadmap spanning many weeks with
+ *  several sessions/day can easily exceed that in a single delete+recreate. */
+async function commitInChunks(ops: Array<(batch: ReturnType<typeof writeBatch>) => void>) {
+  const CHUNK_SIZE = 450;
+  for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
+    const batch = writeBatch(db);
+    ops.slice(i, i + CHUNK_SIZE).forEach(op => op(batch));
+    await batch.commit();
+  }
+}
+
 /** Deletes every studySessions doc generated from this roadmap (via roadmapId). Leaves manually-added sessions untouched. */
 export const deleteSessionsByRoadmap = async (roadmapId: string) => {
   const snapshot = await getDocs(
     query(collection(db, 'studySessions'), where('roadmapId', '==', roadmapId)),
   );
   if (snapshot.empty) return;
-  const batch = writeBatch(db);
-  snapshot.docs.forEach(d => batch.delete(d.ref));
-  await batch.commit();
+  await commitInChunks(snapshot.docs.map(d => (batch: ReturnType<typeof writeBatch>) => batch.delete(d.ref)));
 };
 
 export const getRoadmaps = async (userId: string): Promise<Roadmap[]> => {
@@ -362,26 +372,45 @@ type TimetableEntry = {
 };
 
 /**
- * Persist roadmap-generated session blocks to Firestore.
- * Uses a stable document ID (rdmp_<roadmapId>_<date>_<HHMM>) so re-saving
- * the same roadmap is idempotent — existing sessions are NOT overwritten.
+ * The single write path for turning a roadmap's session list into
+ * studySessions docs. Always deletes-then-recreates rather than skipping when
+ * sessions already exist, so it's equally correct at creation (nothing to
+ * delete yet), on a full regenerate, and on a scoped edit:
+ *
+ * - `dateRange` omitted → replaces EVERY session belonging to this roadmap
+ *   (used on create, and on roadmap delete via an empty `sessions` array).
+ * - `dateRange` given → only sessions whose date falls inside
+ *   [start, end] are deleted/recreated; sessions for this roadmap outside
+ *   that window (and their completion status) are left untouched. Used when
+ *   editing a single week, so unrelated weeks don't lose completion history.
+ *
+ * Deterministic doc IDs (rdmp_<roadmapId>_<date>_<HHMM>) plus the delete pass
+ * guarantee no duplicate or orphaned session can survive a call to this
+ * function.
  */
-export const createSessionsFromRoadmap = async (
+export const replaceSessionsForRoadmap = async (
   userId: string,
   roadmapId: string,
   sessions: TimetableEntry[],
+  dateRange?: { start: string; end: string },
 ) => {
-  // Check if we already created sessions for this roadmap
   const existing = await getDocs(
     query(collection(db, 'studySessions'), where('roadmapId', '==', roadmapId)),
   );
-  if (!existing.empty) return; // already seeded — skip to prevent duplicates
+  const toDelete = dateRange
+    ? existing.docs.filter(d => {
+        const date = (d.data().date as string) ?? '';
+        return date >= dateRange.start && date <= dateRange.end;
+      })
+    : existing.docs;
 
-  const batch = writeBatch(db);
+  const ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = toDelete.map(
+    d => (batch: ReturnType<typeof writeBatch>) => batch.delete(d.ref),
+  );
   for (const s of sessions) {
     const sessionId = `rdmp_${roadmapId}_${s.date}_${s.startTime.replace(':', '')}`;
     const ref = doc(db, 'studySessions', sessionId);
-    batch.set(ref, removeUndefined({
+    ops.push(batch => batch.set(ref, removeUndefined({
       userId,
       roadmapId,
       subjectId: s.subjectId ?? '',
@@ -394,9 +423,9 @@ export const createSessionsFromRoadmap = async (
       status: 'scheduled',
       completed: false,
       createdAt: serverTimestamp(),
-    }));
+    })));
   }
-  await batch.commit();
+  await commitInChunks(ops);
 };
 
 export const getStudySessionsByDate = async (userId: string, date: string): Promise<StudySession[]> => {

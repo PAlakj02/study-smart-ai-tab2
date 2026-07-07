@@ -1,10 +1,18 @@
 import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
-import { StudyRoadmap, TimetableBlock, WeekPlan } from '@/services/geminiService';
+import { StudyRoadmap, WeekPlan, generateSessionsFromRoadmap } from '@/services/geminiService';
 import { findNextAvailableSlot, SchedulingParams } from '@/services/scheduleUtils';
 import { calculateCurrentStreak, calculateBestStreak } from '@/services/streakUtils';
 import { useAuth } from './AuthContext';
 import * as firestoreService from '@/services/firestoreService';
 import { toast } from 'sonner';
+
+/** Adds whole days to a "YYYY-MM-DD" string via UTC arithmetic — avoids the
+ *  local-timezone off-by-one that `new Date(dateStr)` day math is prone to. */
+const addDaysToDateStr = (dateStr: string, days: number): string => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+};
 
 export type TopicStatus = 'pending' | 'in-progress' | 'completed' | 'revising';
 export type ChapterDifficulty = 'easy' | 'medium' | 'hard';
@@ -92,7 +100,6 @@ interface StudyDataContextType {
   completeSession: (sessionId: string) => Promise<void>;
   completeStudySession: (sessionId: string) => Promise<void>;
   updateStudySession: (sessionId: string, updates: Partial<StudySession>) => Promise<void>;
-  createSessionsFromRoadmap: (roadmapId: string, blocks: TimetableBlock[]) => Promise<void>;
   markSessionMissed: (sessionId: string) => Promise<void>;
   markSessionSkipped: (sessionId: string) => Promise<void>;
   rescheduleSession: (sessionId: string) => Promise<void>;
@@ -156,6 +163,36 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     setRoadmap(mostRecent ?? null);
   };
 
+  /** Firestore StudySession → context StudySession — the one place this shape
+   *  translation happens, reused by every load/refresh path so they can never
+   *  drift out of sync with each other. */
+  const mapSessions = (raw: firestoreService.StudySession[]): StudySession[] =>
+    raw.map(s => ({
+      id: s.id,
+      subjectId: s.subjectId,
+      subjectName: s.subjectName,
+      topic: s.topic,
+      date: s.date,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      duration: s.duration,
+      completed: s.completed ?? false,
+      status: (s.status as SessionStatus) ?? (s.completed ? 'completed' : 'scheduled'),
+      roadmapId: s.roadmapId,
+    }));
+
+  /** Re-pulls the full session list from Firestore and replaces local state
+   *  wholesale. This is the ONLY way `sessions` is ever updated after the
+   *  initial load — every roadmap create/edit/delete calls this afterwards
+   *  instead of hand-patching the array, so Dashboard, Calendar, and
+   *  Analytics (all consumers of the same `sessions` value) can never drift
+   *  out of sync with what's actually in Firestore or with each other. */
+  const refreshSessions = async () => {
+    if (!user) return;
+    const updated = await firestoreService.getStudySessions(user.id);
+    setSessions(mapSessions(updated));
+  };
+
   // Load all data from Firestore when user authenticates
   useEffect(() => {
     const loadUserData = async () => {
@@ -184,19 +221,7 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
 
         setSubjects(userSubjects);
         applyRoadmapsBySubject(roadmapsBySubject);
-        setSessions(userSessions.map(s => ({
-          id: s.id,
-          subjectId: s.subjectId,
-          subjectName: s.subjectName,
-          topic: s.topic,
-          date: s.date,
-          startTime: s.startTime,
-          endTime: s.endTime,
-          duration: s.duration,
-          completed: s.completed ?? false,
-          status: (s.status as SessionStatus) ?? (s.completed ? 'completed' : 'scheduled'),
-          roadmapId: s.roadmapId,
-        })));
+        setSessions(mapSessions(userSessions));
 
         if (userPrefs?.totalStudyHours !== undefined) {
           setTotalStudyHours(userPrefs.totalStudyHours);
@@ -230,19 +255,7 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         firestoreService.getUserPreferences(user.id),
       ]);
       setSubjects(userSubjects);
-      setSessions(userSessions.map(s => ({
-        id: s.id,
-        subjectId: s.subjectId,
-        subjectName: s.subjectName,
-        topic: s.topic,
-        date: s.date,
-        startTime: s.startTime,
-        endTime: s.endTime,
-        duration: s.duration,
-        completed: s.completed ?? false,
-        status: (s.status as SessionStatus) ?? (s.completed ? 'completed' : 'scheduled'),
-        roadmapId: s.roadmapId,
-      })));
+      setSessions(mapSessions(userSessions));
       if (userPrefs?.totalStudyHours !== undefined) {
         setTotalStudyHours(userPrefs.totalStudyHours);
       }
@@ -548,30 +561,6 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const createSessionsFromRoadmap = async (roadmapId: string, blocks: TimetableBlock[]) => {
-    if (!user || blocks.length === 0) return;
-    try {
-      await firestoreService.createSessionsFromRoadmap(user.id, roadmapId, blocks);
-      // Reload so the dashboard picks up the new sessions immediately
-      const updated = await firestoreService.getStudySessions(user.id);
-      setSessions(updated.map(s => ({
-        id: s.id,
-        subjectId: s.subjectId,
-        subjectName: s.subjectName,
-        topic: s.topic,
-        date: s.date,
-        startTime: s.startTime,
-        endTime: s.endTime,
-        duration: s.duration,
-        completed: s.completed ?? false,
-        status: (s.status as SessionStatus) ?? 'scheduled',
-        roadmapId: s.roadmapId,
-      })));
-    } catch (error) {
-      console.error('Error creating sessions from roadmap:', error);
-    }
-  };
-
   const markSessionMissed = async (sessionId: string) => {
     const session = sessions.find(s => s.id === sessionId);
     if (!session || session.status === 'missed') return;
@@ -776,29 +765,19 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
       setRoadmapsBySubjectId(prev => ({ ...prev, [savedRoadmap.subjectId]: savedRoadmap }));
     }
 
-    // Persist session blocks (idempotent — skips if already seeded)
+    // Persist session blocks — this roadmap's docs are freshly created, so
+    // there's nothing to delete yet, but going through the same replace path
+    // used for edits/deletes keeps session writes on a single code path.
     if (suggestedSessions && suggestedSessions.length > 0) {
       try {
-        await firestoreService.createSessionsFromRoadmap(user.id, roadmapId, suggestedSessions);
+        await firestoreService.replaceSessionsForRoadmap(user.id, roadmapId, suggestedSessions);
       } catch (sessionError) {
         console.error('Sessions save failed (roadmap saved OK):', sessionError);
       }
-      // Reload sessions regardless so UI reflects whatever was saved
+      // Reload regardless so Dashboard, Calendar, and Analytics all pick up
+      // exactly what's in Firestore, not an assumed-successful local write.
       try {
-        const updated = await firestoreService.getStudySessions(user.id);
-        setSessions(updated.map(s => ({
-          id: s.id,
-          subjectId: s.subjectId,
-          subjectName: s.subjectName,
-          topic: s.topic,
-          date: s.date,
-          startTime: s.startTime,
-          endTime: s.endTime,
-          duration: s.duration,
-          completed: s.completed ?? false,
-          status: (s.status as SessionStatus) ?? 'scheduled',
-          roadmapId: s.roadmapId,
-        })));
+        await refreshSessions();
       } catch (reloadError) {
         console.error('Session reload failed:', reloadError);
       }
@@ -809,10 +788,13 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
   // ── Edit a single week of an already-saved roadmap (focus, topics, goals,
   //    notes) — reuses the existing roadmap doc + updateRoadmap, no new
   //    collection. Updates local state first so the UI (this panel, the week
-  //    timeline, "This Week" progress) reflects the change immediately;
-  //    already-generated calendar sessions for that week are NOT rewritten,
-  //    since that would mean deleting/recreating session docs and their
-  //    completion history rather than editing a field. ─────────────────────
+  //    timeline, "This Week" progress) reflects the change immediately, then
+  //    regenerates ONLY that week's studySessions docs from the updated
+  //    topics — via firestoreService.replaceSessionsForRoadmap scoped to that
+  //    week's date range — so Calendar/Dashboard/Analytics can never show
+  //    sessions for topics that no longer exist in the roadmap. Other weeks'
+  //    sessions (and their completion history) are left untouched since
+  //    nothing about them changed. ───────────────────────────────────────
   const updateRoadmapWeek = async (
     subjectId: string,
     weekIndex: number,
@@ -832,12 +814,36 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
 
     try {
       await firestoreService.updateRoadmap(existing.id, { weeklyPlans: updatedWeeklyPlans } as any);
-      toast.success('Week updated');
     } catch (error) {
       console.error('Error updating week:', error);
       toast.error('Failed to save week — reverting');
       setRoadmapsBySubjectId(prev => ({ ...prev, [subjectId]: existing }));
       if (roadmap?.id === existing.id) setRoadmap(existing);
+      return;
+    }
+
+    // Same weekIndex bucketing rule buildSuggestedSessions uses: every day
+    // from startDate + weekIndex*7 through +6 belongs to this week, except
+    // the LAST week, which absorbs every remaining day through endDate.
+    const isLastWeek = weekIndex === updatedWeeklyPlans.length - 1;
+    const weekStart = addDaysToDateStr(existing.startDate, weekIndex * 7);
+    const naturalWeekEnd = addDaysToDateStr(existing.startDate, weekIndex * 7 + 6);
+    const weekEnd = isLastWeek
+      ? existing.endDate
+      : (naturalWeekEnd > existing.endDate ? existing.endDate : naturalWeekEnd);
+
+    try {
+      const freshSessions = generateSessionsFromRoadmap(updatedRoadmap)
+        .filter(s => s.date >= weekStart && s.date <= weekEnd);
+      await firestoreService.replaceSessionsForRoadmap(user.id, existing.id, freshSessions, {
+        start: weekStart,
+        end: weekEnd,
+      });
+      await refreshSessions();
+      toast.success('Week updated');
+    } catch (sessionError) {
+      console.error('Error regenerating sessions for edited week:', sessionError);
+      toast.error('Week saved, but its calendar sessions failed to update');
     }
   };
 
@@ -876,20 +882,7 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     // exactly what's currently in the database — no stale/cached array can
     // keep a deleted roadmap's sessions visible.
     try {
-      const updated = await firestoreService.getStudySessions(user.id);
-      setSessions(updated.map(s => ({
-        id: s.id,
-        subjectId: s.subjectId,
-        subjectName: s.subjectName,
-        topic: s.topic,
-        date: s.date,
-        startTime: s.startTime,
-        endTime: s.endTime,
-        duration: s.duration,
-        completed: s.completed ?? false,
-        status: (s.status as SessionStatus) ?? (s.completed ? 'completed' : 'scheduled'),
-        roadmapId: s.roadmapId,
-      })));
+      await refreshSessions();
     } catch (reloadError) {
       console.error('Session reload failed after roadmap delete (sessions were deleted in Firestore):', reloadError);
       setSessions(prev => prev.filter(s => s.roadmapId !== existing.id));
@@ -932,7 +925,6 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         completeSession,
         completeStudySession,
         updateStudySession,
-        createSessionsFromRoadmap,
         markSessionMissed,
         markSessionSkipped,
         rescheduleSession,

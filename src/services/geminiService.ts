@@ -290,6 +290,36 @@ const buildSuggestedSessions = (
   return sessions;
 };
 
+/**
+ * Regenerates the full session list for an already-saved roadmap from its
+ * CURRENT weeklyPlans + scheduling params — the exact same builder used at
+ * creation time. This is the single source of truth for "what sessions
+ * should exist for this roadmap right now"; callers (e.g. a week edit) diff
+ * this output against Firestore instead of hand-patching session docs.
+ */
+export const generateSessionsFromRoadmap = (roadmap: StudyRoadmap): TimetableBlock[] => {
+  const input: RoadmapInput = {
+    subjects: [roadmap.subjectName],
+    subjectId: roadmap.subjectId,
+    startDate: roadmap.startDate,
+    endDate: roadmap.endDate,
+    examDate: roadmap.examDate,
+    currentLevel: 'intermediate',
+    studyHoursPerDay: 0,
+    availableStudyDays: roadmap.availableStudyDays ?? [1, 2, 3, 4, 5, 6],
+    preferredStartTime: roadmap.preferredStartTime ?? '16:00',
+    preferredEndTime: roadmap.preferredEndTime ?? '20:00',
+    sessionLengthMinutes: roadmap.sessionLengthMinutes ?? 60,
+    breakLengthMinutes: roadmap.breakLengthMinutes ?? 10,
+    examUrgency: 'medium',
+    focusPreference: 'mixed',
+    includeBufferDays: false,
+    neurodivergentSupport: !!roadmap.neurodivergentOptions,
+    neurodivergentOptions: roadmap.neurodivergentOptions as NeurodivergentOptions | undefined,
+  };
+  return buildSuggestedSessions(roadmap.weeklyPlans, input);
+};
+
 export const generateStudyRoadmap = async (input: RoadmapInput): Promise<StudyRoadmap> => {
   if (!input.topicTags?.length) {
     throw new Error('NO_TOPICS: add topics to this subject before generating a roadmap');

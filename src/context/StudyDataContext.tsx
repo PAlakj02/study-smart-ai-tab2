@@ -849,23 +849,53 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     if (!user) return;
     const existing = roadmapsBySubjectId[subjectId];
     if (!existing?.id) return;
+
+    // Sessions first, roadmap doc second — if the roadmap delete were to fail
+    // after sessions were already gone, the worst case is an orphaned roadmap
+    // doc, not orphaned sessions with no owning roadmap. Neither Firestore
+    // call nor local state is touched until both writes succeed, so a partial
+    // failure never leaves the UI claiming a deletion that didn't happen.
     try {
-      await firestoreService.deleteRoadmap(existing.id);
       await firestoreService.deleteSessionsByRoadmap(existing.id);
-
-      setRoadmapsBySubjectId(prev => {
-        const next = { ...prev };
-        delete next[subjectId];
-        return next;
-      });
-      setSessions(prev => prev.filter(s => s.roadmapId !== existing.id));
-      if (roadmap?.id === existing.id) setRoadmap(null);
-
-      toast.success('Roadmap deleted');
+      await firestoreService.deleteRoadmap(existing.id);
     } catch (error) {
       console.error('Error deleting roadmap:', error);
       toast.error('Failed to delete roadmap');
+      return;
     }
+
+    setRoadmapsBySubjectId(prev => {
+      const next = { ...prev };
+      delete next[subjectId];
+      return next;
+    });
+    if (roadmap?.id === existing.id) setRoadmap(null);
+
+    // Re-pull the session list from Firestore itself rather than trusting an
+    // optimistic local filter, so every consumer (Calendar included) renders
+    // exactly what's currently in the database — no stale/cached array can
+    // keep a deleted roadmap's sessions visible.
+    try {
+      const updated = await firestoreService.getStudySessions(user.id);
+      setSessions(updated.map(s => ({
+        id: s.id,
+        subjectId: s.subjectId,
+        subjectName: s.subjectName,
+        topic: s.topic,
+        date: s.date,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        duration: s.duration,
+        completed: s.completed ?? false,
+        status: (s.status as SessionStatus) ?? (s.completed ? 'completed' : 'scheduled'),
+        roadmapId: s.roadmapId,
+      })));
+    } catch (reloadError) {
+      console.error('Session reload failed after roadmap delete (sessions were deleted in Firestore):', reloadError);
+      setSessions(prev => prev.filter(s => s.roadmapId !== existing.id));
+    }
+
+    toast.success('Roadmap deleted');
   };
 
   const todayStr = new Date().toISOString().substring(0, 10);

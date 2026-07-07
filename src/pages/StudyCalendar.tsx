@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { MobileNavMenu } from '@/components/MobileNavMenu';
 import {
   Dialog,
   DialogContent,
@@ -96,8 +97,24 @@ function effectiveStatus(s: StudySession): string {
 const StudyCalendar: React.FC = () => {
   const navigate = useNavigate();
   const { logout } = useAuth();
-  const { sessions, subjects, roadmap, loading, completeStudySession, markSessionMissed, markSessionSkipped, rescheduleSession, updateStudySession, currentStreak, bestStreak } = useStudyData();
+  const { sessions, subjects, roadmap, roadmapsBySubjectId, legacyRoadmaps, loading, completeStudySession, markSessionMissed, markSessionSkipped, rescheduleSession, updateStudySession, currentStreak, bestStreak } = useStudyData();
   const isNDPlan = !!(roadmap as { neurodivergentSupport?: boolean } | null)?.neurodivergentSupport;
+
+  // Belt-and-suspenders against orphaned events: a session is only "live" if
+  // it has no roadmapId at all (manually added) or its roadmapId still points
+  // at a roadmap that's actually tracked as current — per-subject or legacy
+  // (pre-subjectId) — for its subject. This way the Calendar can never keep
+  // rendering a deleted/superseded roadmap's sessions, even if some other
+  // code path fails to clean up the underlying studySessions docs — it
+  // always reflects the latest known data, not a stale snapshot.
+  const liveRoadmapIds = useMemo(
+    () => new Set([...Object.values(roadmapsBySubjectId), ...legacyRoadmaps].map(r => r.id)),
+    [roadmapsBySubjectId, legacyRoadmaps],
+  );
+  const liveSessions = useMemo(
+    () => sessions.filter(s => !s.roadmapId || liveRoadmapIds.has(s.roadmapId)),
+    [sessions, liveRoadmapIds],
+  );
 
   const today = new Date();
   const todayStr = toDateStr(today);
@@ -109,13 +126,13 @@ const StudyCalendar: React.FC = () => {
   // ── Build date → session[] map ────────────────────────────────────────────
   const sessionsByDate = useMemo(() => {
     const map = new Map<string, StudySession[]>();
-    for (const s of sessions) {
+    for (const s of liveSessions) {
       const key = s.date.substring(0, 10);
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(s);
     }
     return map;
-  }, [sessions]);
+  }, [liveSessions]);
 
   // ── Month grid ────────────────────────────────────────────────────────────
   const grid = useMemo(() => makeMonthGrid(viewYear, viewMonth), [viewYear, viewMonth]);
@@ -123,8 +140,8 @@ const StudyCalendar: React.FC = () => {
   // ── Month-level stats ─────────────────────────────────────────────────────
   const monthPrefix = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`;
   const thisMonthSessions = useMemo(
-    () => sessions.filter(s => s.date.startsWith(monthPrefix)),
-    [sessions, monthPrefix],
+    () => liveSessions.filter(s => s.date.startsWith(monthPrefix)),
+    [liveSessions, monthPrefix],
   );
   const completedThisMonth = thisMonthSessions.filter(s => s.completed).length;
   const pendingThisMonth   = thisMonthSessions.length - completedThisMonth;
@@ -203,7 +220,7 @@ const StudyCalendar: React.FC = () => {
   const [editEndTime, setEditEndTime] = useState('');
   const [editTopic, setEditTopic] = useState('');
 
-  const editingSession = sessions.find(s => s.id === editSessionId) ?? null;
+  const editingSession = liveSessions.find(s => s.id === editSessionId) ?? null;
 
   const openEditSession = (session: StudySession) => {
     setEditSessionId(session.id);
@@ -343,6 +360,18 @@ const StudyCalendar: React.FC = () => {
               <Button variant="ghost" size="icon" onClick={() => navigate('/settings')}><Settings className="h-5 w-5" /></Button>
               <Button variant="ghost" size="icon" onClick={handleLogout}><LogOut className="h-5 w-5" /></Button>
             </div>
+            <MobileNavMenu
+              items={[
+                { label: 'Dashboard', path: '/dashboard' },
+                { label: 'AI Roadmap', path: '/roadmap' },
+                { label: 'Motivation', path: '/motivation' },
+                { label: 'Parent View', path: '/parent' },
+                { label: 'Tutorial', path: '/tutorial' },
+                { label: 'My Subjects', path: '/subjects' },
+                { label: 'Analytics', path: '/analytics' },
+              ]}
+              onLogout={handleLogout}
+            />
           </div>
         </div>
       </header>
@@ -816,7 +845,7 @@ const StudyCalendar: React.FC = () => {
             </Dialog>
 
             {/* ── No sessions at all — CTA ── */}
-            {sessions.length === 0 && (
+            {liveSessions.length === 0 && (
               <Card className="p-8 text-center bg-gradient-to-r from-primary/5 to-secondary/5 border-primary/20">
                 <div className="h-16 w-16 rounded-full gradient-primary flex items-center justify-center mx-auto mb-4">
                   <Sparkles className="h-8 w-8 text-white" />

@@ -103,7 +103,7 @@ interface StudyDataContextType {
     weekIndex: number,
     weekUpdates: Partial<Pick<WeekPlan, 'focus' | 'topics' | 'topicIds' | 'goals' | 'notes'>>,
   ) => Promise<void>;
-  clearRoadmap: () => Promise<void>;
+  deleteRoadmap: (subjectId: string) => Promise<void>;
   refreshData: () => Promise<void>;
   myGoals: firestoreService.GoalItem[];
   addGoal: (text: string) => Promise<void>;
@@ -841,15 +841,30 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const clearRoadmap = async () => {
-    if (!user || !roadmap) return;
+  // Deletes only the roadmap doc + its generated sessions for one subject.
+  // The subject, its chapters/topics, and any other subjects' data are left
+  // untouched, so a fresh roadmap can be generated for the same subject right
+  // after without recreating anything.
+  const deleteRoadmap = async (subjectId: string) => {
+    if (!user) return;
+    const existing = roadmapsBySubjectId[subjectId];
+    if (!existing?.id) return;
     try {
-      if (roadmap.id) await firestoreService.deleteRoadmap(roadmap.id);
-      setRoadmap(null);
-      toast.success('Roadmap cleared');
+      await firestoreService.deleteRoadmap(existing.id);
+      await firestoreService.deleteSessionsByRoadmap(existing.id);
+
+      setRoadmapsBySubjectId(prev => {
+        const next = { ...prev };
+        delete next[subjectId];
+        return next;
+      });
+      setSessions(prev => prev.filter(s => s.roadmapId !== existing.id));
+      if (roadmap?.id === existing.id) setRoadmap(null);
+
+      toast.success('Roadmap deleted');
     } catch (error) {
-      console.error('Error clearing roadmap:', error);
-      toast.error('Failed to clear roadmap');
+      console.error('Error deleting roadmap:', error);
+      toast.error('Failed to delete roadmap');
     }
   };
 
@@ -894,7 +909,7 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         updatePreferences,
         saveRoadmap,
         updateRoadmapWeek,
-        clearRoadmap,
+        deleteRoadmap,
         refreshData,
         myGoals,
         addGoal,

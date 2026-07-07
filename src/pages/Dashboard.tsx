@@ -18,6 +18,17 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   Calendar,
   Clock,
   BookOpen,
@@ -41,6 +52,7 @@ import {
   X,
   Pencil,
   StickyNote,
+  Trash2,
 } from "lucide-react";
 
 // "16:00" → "4:00 PM"
@@ -70,7 +82,7 @@ const Dashboard = () => {
     completeStudySession, markSessionMissed, rescheduleSession, currentStreak, bestStreak,
     myGoals, addGoal, toggleGoal, removeGoal,
     todayChecklist: persistedChecklist, setTodayChecklistItems, toggleChecklistItem,
-    updateRoadmapWeek,
+    updateRoadmapWeek, deleteRoadmap,
   } = useStudyData();
   const [searchParams] = useSearchParams();
   const focusSubjectId = searchParams.get('subjectId');
@@ -137,8 +149,8 @@ const Dashboard = () => {
     : [];
   // Prefer the roadmap's own recorded exam date (fixed at generation time);
   // fall back to the subject's exam date only for legacy roadmaps saved
-  // before this field existed. Never falls back to endDate — that's now an
-  // independently computed value (start + duration), not a copy of examDate.
+  // before this field existed. startDate/endDate/examDate are three fully
+  // independent user-selected fields — never derive one from another.
   const panelExamDate = panelRoadmap?.examDate ?? panelSubject?.examDate;
   const panelDaysLeft = panelExamDate
     ? Math.ceil((new Date(panelExamDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
@@ -485,6 +497,40 @@ const Dashboard = () => {
                       <Sparkles className="h-4 w-4 text-primary" />
                       <h3 className="font-semibold">AI Roadmap</h3>
                     </div>
+                    {panelRoadmap && panelSubject && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-muted-foreground hover:text-destructive"
+                          >
+                            <Trash2 className="h-3.5 w-3.5 mr-1" />
+                            Delete
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete this roadmap?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This permanently deletes the AI roadmap for <strong>{panelSubject.name}</strong> and
+                              every study session generated from it. Your subject, its syllabus/topics, and topic
+                              descriptions are kept, so you can generate a fresh roadmap for {panelSubject.name} right
+                              after. This can't be undone.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              onClick={() => deleteRoadmap(panelSubject.id)}
+                            >
+                              Delete Roadmap
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
                   </div>
 
                   {/* Subject switcher */}

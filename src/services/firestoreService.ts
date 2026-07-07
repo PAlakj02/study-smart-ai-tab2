@@ -49,12 +49,13 @@ export interface Roadmap {
   subjectId?: string;    // optional so pre-existing global roadmap docs still typecheck
   subjectName?: string;
   topicTags?: string[];
-  startDate?: string;    // "YYYY-MM-DD" — user-selected
-  endDate?: string;      // "YYYY-MM-DD" — computed as startDate + totalWeeks, independent of examDate
+  startDate?: string;    // "YYYY-MM-DD" — user-selected, when the roadmap begins
+  endDate?: string;      // "YYYY-MM-DD" — user-selected, when the study schedule finishes
   title: string;
   description: string;
   subjects: string[];
-  examDate: string;
+  examDate: string;      // "YYYY-MM-DD" — user-selected, the actual exam. Fully
+                          // independent of startDate/endDate — may fall after endDate.
   studyHoursPerDay: number;
   weakAreas: string;
   studyStyle: string;
@@ -227,6 +228,17 @@ export const updateRoadmap = async (roadmapId: string, updates: Partial<Roadmap>
 export const deleteRoadmap = async (roadmapId: string) => {
   const roadmapRef = doc(db, 'roadmaps', roadmapId);
   await deleteDoc(roadmapRef);
+};
+
+/** Deletes every studySessions doc generated from this roadmap (via roadmapId). Leaves manually-added sessions untouched. */
+export const deleteSessionsByRoadmap = async (roadmapId: string) => {
+  const snapshot = await getDocs(
+    query(collection(db, 'studySessions'), where('roadmapId', '==', roadmapId)),
+  );
+  if (snapshot.empty) return;
+  const batch = writeBatch(db);
+  snapshot.docs.forEach(d => batch.delete(d.ref));
+  await batch.commit();
 };
 
 export const getRoadmaps = async (userId: string): Promise<Roadmap[]> => {

@@ -37,6 +37,14 @@ export interface RoadmapInput {
   // WeekPlan, instead of baking descriptions into the topic name string itself.
   topicDetails?: TopicDetail[];
   startDate?: string;         // "YYYY-MM-DD" — defaults to today when omitted
+  // "YYYY-MM-DD" — when the study SCHEDULE finishes. The AI/scheduler only
+  // ever generates weeklyPlans/sessions inside [startDate, endDate]. Fully
+  // independent of examDate — do not derive one from the other.
+  endDate: string;
+  // "YYYY-MM-DD" — the actual exam. Purely a display/target date; it has no
+  // influence on how many weeks are generated or when sessions are scheduled.
+  // May legitimately fall after endDate (a study window that finishes before
+  // the exam, leaving a gap for rest/independent revision).
   examDate: string;
   currentLevel: string;
   studyHoursPerDay: number;
@@ -86,13 +94,11 @@ export interface StudyRoadmap {
   subjectId: string;
   subjectName: string;
   topicTags?: string[];
-  startDate: string;   // "YYYY-MM-DD" — user-selected, fixed
-  examDate: string;    // "YYYY-MM-DD" — user-selected, fixed. NEVER derive this from endDate.
-  // "YYYY-MM-DD" — always computed as startDate + totalWeeks*7 days, i.e. the
-  // last day this roadmap's weekly plans actually cover. Independent of
-  // examDate: when the exam is far enough out that totalWeeks gets capped,
-  // endDate legitimately falls before examDate — it is NEVER a copy of it.
-  endDate: string;
+  // Three fully independent, user-selected dates — none is ever derived from
+  // either of the others:
+  startDate: string;   // "YYYY-MM-DD" — when the study schedule begins
+  endDate: string;     // "YYYY-MM-DD" — when the study schedule finishes; weeklyPlans/sessions never extend past this
+  examDate: string;    // "YYYY-MM-DD" — the actual exam; may fall after endDate
   title: string;
   description: string;
   totalWeeks: number;
@@ -167,14 +173,6 @@ const buildTopicRefs = (input: RoadmapInput): TopicDetail[] =>
     description: input.topicDetails?.[i]?.description,
   }));
 
-/** The roadmap's own end date — start + totalWeeks — kept deliberately
- *  independent of examDate (see StudyRoadmap.endDate doc comment). */
-const computeEndDate = (startDate: Date, totalWeeks: number): string => {
-  const end = new Date(startDate);
-  end.setDate(end.getDate() + totalWeeks * 7);
-  return end.toISOString().split('T')[0];
-};
-
 const buildTips = (input: RoadmapInput): string[] => {
   const nd = input.neurodivergentSupport ? input.neurodivergentOptions : null;
   return [
@@ -234,7 +232,9 @@ const buildSuggestedSessions = (
 
   const subject = input.subjects[0] ?? 'Study';
   const sessions: TimetableBlock[] = [];
-  const examDate = new Date(input.examDate);
+  // Bounded by endDate ONLY — examDate has no influence on scheduling at all,
+  // it's purely a separately-displayed target date.
+  const scheduleEnd = new Date(input.endDate);
   const rangeStart = input.startDate ? new Date(input.startDate) : new Date();
 
   // Find the next available study day from the roadmap's start date (defaults to today)
@@ -248,8 +248,10 @@ const buildSuggestedSessions = (
   // packing all topics densely into the first few days and then stopping —
   // each day's session(s) draw from that calendar week's own topic bucket,
   // cycling within the week to fill every available slot that week. Weeks
-  // with no topics (buffer weeks) simply get no sessions.
-  while (current < examDate) {
+  // with no topics (buffer weeks) simply get no sessions. Inclusive of
+  // endDate itself — the study window runs through the end date, not up to
+  // the day before it.
+  while (current <= scheduleEnd) {
     if (availableStudyDays.includes(current.getDay())) {
       const daysSinceStart = Math.floor((current.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000));
       const weekIndex = Math.min(Math.floor(daysSinceStart / 7), weeklyPlans.length - 1);
@@ -299,11 +301,13 @@ export const generateStudyRoadmap = async (input: RoadmapInput): Promise<StudyRo
 
   // Decide which topics belong in which week ourselves — the AI only writes
   // the framing (focus/goals/tips) around a syllabus it never gets to choose.
-  // The roadmap always spans the full selected date range (start -> exam),
+  // The roadmap always spans the full selected [startDate, endDate] window,
   // never shrinks to however many topics exist — see scheduleTopicsAcrossWeeks.
-  const examDate = new Date(input.examDate);
+  // examDate plays NO part in this — it's a separate target date, displayed
+  // but never used for scheduling.
   const startDate = input.startDate ? new Date(input.startDate) : new Date();
-  const daysInRange = Math.ceil((examDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+  const endDate = new Date(input.endDate);
+  const daysInRange = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
   const calendarWeeks = Math.max(1, Math.min(Math.ceil(daysInRange / 7), 26));
   const contentWeeks = input.includeBufferDays ? Math.max(1, calendarWeeks - 1) : calendarWeeks;
   const topicBuckets = scheduleTopicsAcrossWeeks(buildTopicRefs(input), contentWeeks);
@@ -351,7 +355,8 @@ You are an expert educational consultant. Your job is to SCHEDULE the student's 
 
 **Student Profile:**
 - Subject: ${subject}
-- Exam Date: ${input.examDate}
+- Study Schedule Window: ${input.startDate} to ${input.endDate} (this plan covers ONLY this window)
+- Exam Date: ${input.examDate}${input.examDate > input.endDate ? ' (after the study window ends — leave time for independent revision)' : ''}
 - Current Level: ${input.currentLevel}
 - Daily Study Hours: ${input.studyHoursPerDay} h/day
 - Goals: ${input.goals || 'Excel in exams'}
@@ -378,7 +383,7 @@ ${ndBlock}
 **RETURN ONLY VALID JSON — no markdown, no comments:**
 {
   "title": "Study Roadmap: ${subject}",
-  "description": "${totalWeeks}-week plan until ${input.examDate}, ${weeklyHours} h/week on ${dayLabels}",
+  "description": "${totalWeeks}-week plan through ${input.endDate}, ${weeklyHours} h/week on ${dayLabels}",
   "totalWeeks": ${topicBuckets.length},
   "weeklyPlans": [
     {
@@ -455,13 +460,13 @@ ${ndBlock}
       subjectName: subject,
       topicTags: input.topicTags,
       startDate: input.startDate ?? new Date().toISOString().split('T')[0],
+      endDate: input.endDate,
       examDate: input.examDate,
-      endDate: computeEndDate(startDate, totalWeeks),
       title: roadmapData?.title || `Study Roadmap: ${subject}`,
       // Always built from our own authoritative totalWeeks — never trust the AI's
       // own description text, which can state a stale/wrong week count even when
       // topics/weeklyPlans themselves are correct.
-      description: `${totalWeeks}-week plan until ${input.examDate}, ${weeklyHours} h/week on ${dayLabels}`,
+      description: `${totalWeeks}-week plan through ${input.endDate}, ${weeklyHours} h/week on ${dayLabels}`,
       totalWeeks,
       weeklyPlans,
       tips: Array.isArray(roadmapData?.tips) && roadmapData.tips.length ? roadmapData.tips : buildTips(input),
@@ -485,9 +490,11 @@ const generateDemoRoadmap = (input: RoadmapInput): StudyRoadmap => {
     throw new Error('NO_TOPICS: add topics to this subject before generating a roadmap');
   }
 
-  const examDate = new Date(input.examDate);
+  // Week count/scheduling derives from [startDate, endDate] only — examDate
+  // is never used here, it's a separate display-only target date.
   const startDate = input.startDate ? new Date(input.startDate) : new Date();
-  const daysInRange = Math.ceil((examDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+  const endDate = new Date(input.endDate);
+  const daysInRange = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
   const calendarWeeks = Math.max(1, Math.min(Math.ceil(daysInRange / 7), 26));
   const contentWeeks = input.includeBufferDays ? Math.max(1, calendarWeeks - 1) : calendarWeeks;
   const weeklyHours = (input.availableStudyDays?.length ?? 6) * input.studyHoursPerDay;
@@ -533,8 +540,8 @@ const generateDemoRoadmap = (input: RoadmapInput): StudyRoadmap => {
     subjectName: input.subjects[0] ?? '',
     topicTags: input.topicTags,
     startDate: input.startDate ?? new Date().toISOString().split('T')[0],
+    endDate: input.endDate,
     examDate: input.examDate,
-    endDate: computeEndDate(startDate, calendarWeeks),
     title: `${calendarWeeks}-Week Study Roadmap`,
     description: `A personalised ${calendarWeeks}-week plan covering ${input.subjects.join(', ')} — ${input.studyHoursPerDay} h/day on ${(input.availableStudyDays ?? [1, 2, 3, 4, 5, 6]).map(d => DAY_NAMES[d]).join(', ')}.`,
     totalWeeks: calendarWeeks,

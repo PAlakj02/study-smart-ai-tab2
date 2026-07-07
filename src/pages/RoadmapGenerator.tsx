@@ -59,6 +59,7 @@ type RoadmapFormData = Omit<RoadmapInput, 'subjectId' | 'topicTags' | 'subjects'
 
 const DEFAULT_FORM: RoadmapFormData = {
   startDate: new Date().toISOString().split('T')[0],
+  endDate: '',
   examDate: '',
   currentLevel: 'intermediate',
   studyHoursPerDay: 6,
@@ -147,6 +148,14 @@ const RoadmapGenerator = () => {
 
   // ── Generate ──────────────────────────────────────────────────────────────
   const handleGenerate = async () => {
+    if (!formData.endDate) {
+      toast.error('Please select when your study schedule should end');
+      return;
+    }
+    if (formData.startDate && formData.endDate <= formData.startDate) {
+      toast.error('End date must be after the start date');
+      return;
+    }
     if (!formData.examDate) {
       toast.error('Please select your exam date');
       return;
@@ -383,13 +392,13 @@ const RoadmapGenerator = () => {
 
               <div className="border-t border-border" />
 
-              {/* ── 2. Start Date & Exam Date ── */}
+              {/* ── 2. Start Date, End Date & Exam Date ── */}
               <div>
                 <Label className="text-lg font-semibold mb-3 flex items-center gap-2">
                   <Calendar className="h-5 w-5" />
                   Roadmap Dates
                 </Label>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div>
                     <p className="text-sm text-muted-foreground mb-2">Start date</p>
                     <Input
@@ -397,8 +406,18 @@ const RoadmapGenerator = () => {
                       value={formData.startDate}
                       onChange={e => setFormData({ ...formData, startDate: e.target.value })}
                       min={new Date().toISOString().split('T')[0]}
-                      max={formData.examDate || undefined}
+                      max={formData.endDate || formData.examDate || undefined}
                     />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-2">End date</p>
+                    <Input
+                      type="date"
+                      value={formData.endDate}
+                      onChange={e => setFormData({ ...formData, endDate: e.target.value })}
+                      min={formData.startDate || new Date().toISOString().split('T')[0]}
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">When the study schedule finishes</p>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground mb-2">Exam date</p>
@@ -408,6 +427,7 @@ const RoadmapGenerator = () => {
                       onChange={e => setFormData({ ...formData, examDate: e.target.value })}
                       min={formData.startDate || new Date().toISOString().split('T')[0]}
                     />
+                    <p className="text-xs text-muted-foreground mt-1">The actual exam — may be after the schedule ends</p>
                   </div>
                 </div>
               </div>
@@ -839,6 +859,12 @@ const RoadmapGenerator = () => {
                         <div className="text-xs text-muted-foreground">Topics</div>
                       </div>
                     </div>
+                    {rm.examDate && (
+                      <p className="text-xs text-muted-foreground mt-3 pt-3 border-t border-primary/10">
+                        🎯 Exam date: <span className="font-medium text-foreground">{rm.examDate}</span>
+                        {rm.examDate > rm.endDate ? ' (after the study window ends)' : ''}
+                      </p>
+                    )}
                     {rm.suggestedSessions && rm.suggestedSessions.length > 0 && (
                       <div className="mt-3 pt-3 border-t border-primary/10">
                         <p className="text-xs text-muted-foreground">

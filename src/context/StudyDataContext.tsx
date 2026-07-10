@@ -110,6 +110,7 @@ interface StudyDataContextType {
     weekIndex: number,
     weekUpdates: Partial<Pick<WeekPlan, 'focus' | 'topics' | 'topicIds' | 'goals' | 'notes'>>,
   ) => Promise<void>;
+  toggleWeekGoal: (subjectId: string, weekIndex: number, goalIndex: number) => Promise<void>;
   deleteRoadmap: (subjectId: string) => Promise<void>;
   refreshData: () => Promise<void>;
   myGoals: firestoreService.GoalItem[];
@@ -833,6 +834,37 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  // Ticks/unticks one goal within a week — the real behaviour behind the
+  // "Visual checklist" neurodivergent option, which otherwise would just be
+  // a tip sentence with nothing to actually tick. `goalsCompleted` is created
+  // lazily (all-false, index-aligned with `goals`) the first time a goal in
+  // that week is toggled, so older roadmaps without the field still work.
+  const toggleWeekGoal = async (subjectId: string, weekIndex: number, goalIndex: number) => {
+    if (!user) return;
+    const existing = roadmapsBySubjectId[subjectId];
+    const week = existing?.weeklyPlans[weekIndex];
+    if (!existing || !week || !week.goals[goalIndex]) return;
+
+    const baseCompleted = week.goalsCompleted ?? week.goals.map(() => false);
+    const updatedCompleted = baseCompleted.map((c, i) => (i === goalIndex ? !c : c));
+    const updatedWeeklyPlans = existing.weeklyPlans.map((w, i) =>
+      i === weekIndex ? { ...w, goalsCompleted: updatedCompleted } : w,
+    );
+    const updatedRoadmap = { ...existing, weeklyPlans: updatedWeeklyPlans };
+
+    setRoadmapsBySubjectId(prev => ({ ...prev, [subjectId]: updatedRoadmap }));
+    if (roadmap?.id === existing.id) setRoadmap(updatedRoadmap);
+
+    try {
+      await firestoreService.updateRoadmap(existing.id, { weeklyPlans: updatedWeeklyPlans } as any);
+    } catch (error) {
+      console.error('Error toggling week goal:', error);
+      toast.error('Failed to save checklist — reverting');
+      setRoadmapsBySubjectId(prev => ({ ...prev, [subjectId]: existing }));
+      if (roadmap?.id === existing.id) setRoadmap(existing);
+    }
+  };
+
   // Deletes only the roadmap doc + its generated sessions for one subject.
   // The subject, its chapters/topics, and any other subjects' data are left
   // untouched, so a fresh roadmap can be generated for the same subject right
@@ -917,6 +949,7 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         updatePreferences,
         saveRoadmap,
         updateRoadmapWeek,
+        toggleWeekGoal,
         deleteRoadmap,
         refreshData,
         myGoals,

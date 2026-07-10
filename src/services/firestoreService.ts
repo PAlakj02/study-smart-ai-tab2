@@ -95,6 +95,7 @@ export interface WeeklyPlan {
   topics: string[];
   topicIds?: (string | undefined)[];
   goals: string[];
+  goalsCompleted?: boolean[];
   notes?: string;
 }
 

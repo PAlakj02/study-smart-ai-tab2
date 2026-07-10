@@ -83,7 +83,7 @@ const Dashboard = () => {
     completeStudySession, markSessionMissed, rescheduleSession, currentStreak, bestStreak,
     myGoals, addGoal, toggleGoal, removeGoal,
     todayChecklist: persistedChecklist, setTodayChecklistItems, toggleChecklistItem,
-    updateRoadmapWeek, deleteRoadmap,
+    updateRoadmapWeek, toggleWeekGoal, deleteRoadmap,
   } = useStudyData();
   const [searchParams] = useSearchParams();
   const focusSubjectId = searchParams.get('subjectId');
@@ -212,21 +212,33 @@ const Dashboard = () => {
   const [expandedFocusGroups, setExpandedFocusGroups] = React.useState<Record<string, boolean>>({});
 
   // ── AI-generated Today's Checklist — canned study activities for today's
-  //    real topics (falls back to the roadmap panel's current-week topics).
+  //    real topics. Falls back to EVERY subject's current-week topics (not
+  //    just whichever one happens to be selected in the AI Roadmap panel
+  //    dropdown) on rest days with no sessions scheduled, so "today's tasks"
+  //    genuinely reflects the whole day, not one arbitrary subject.
   //    Persisted per-day in context: pre-filled once when the day starts,
   //    checked state survives refresh, and a fresh list replaces it the next
   //    study day (see the sync effect below). ────────────────────────────────
   const computedChecklistItems = React.useMemo(() => {
-    const topics = todayFocusGroups.length > 0
-      ? todayFocusGroups.map(g => g.topic)
-      : (panelRoadmap?.weeklyPlans[panelCurrentWeekIndex]?.topics ?? []);
+    let topics: string[];
+    if (todayFocusGroups.length > 0) {
+      topics = todayFocusGroups.map(g => g.topic);
+    } else {
+      topics = Object.values(roadmapsBySubjectId).flatMap(rm => {
+        const weekIndex = Math.min(
+          Math.max(0, Math.floor((Date.now() - new Date(rm.createdAt).getTime()) / (7 * 24 * 60 * 60 * 1000))),
+          rm.weeklyPlans.length - 1,
+        );
+        return rm.weeklyPlans[weekIndex]?.topics ?? [];
+      });
+    }
     const activityTemplates = (t: string) => [
       `Read notes on ${t}`,
       `Watch a lecture/tutorial on ${t}`,
       `Solve practice questions on ${t}`,
     ];
     return topics.slice(0, 2).flatMap(activityTemplates).map((text, i) => ({ id: `check-${i}`, text, completed: false }));
-  }, [todayFocusGroups, panelRoadmap, panelCurrentWeekIndex]);
+  }, [todayFocusGroups, roadmapsBySubjectId]);
 
   // Pre-fill/replace the persisted checklist exactly once when the stored
   // date no longer matches today — i.e. at the start of a new study day.
@@ -547,6 +559,12 @@ const Dashboard = () => {
                     )}
                   </div>
 
+                  {panelRoadmap?.neurodivergentOptions?.lowDistractionMode && (
+                    <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-secondary/10 text-secondary-foreground border border-secondary/20 mb-2">
+                      🔕 Low-distraction mode — phone away, one tab open
+                    </span>
+                  )}
+
                   {/* Subject switcher */}
                   <select
                     className="w-full mt-2 mb-3 px-2 py-1.5 text-sm bg-background border border-input rounded-md"
@@ -694,12 +712,30 @@ const Dashboard = () => {
                                       </div>
                                       {week.goals.length > 0 && (
                                         <div className="mt-1.5 pt-1.5 border-t border-border/50 space-y-0.5">
-                                          {week.goals.map((g, gi) => (
-                                            <div key={gi} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                                              <ListChecks className="h-3 w-3 flex-shrink-0" />
-                                              <span>{g}</span>
-                                            </div>
-                                          ))}
+                                          {panelRoadmap.neurodivergentOptions?.visualChecklist ? (
+                                            // Real tick-box goals — the actual behaviour behind the
+                                            // "Visual checklist" ND option, not just a tip sentence.
+                                            week.goals.map((g, gi) => {
+                                              const done = week.goalsCompleted?.[gi] ?? false;
+                                              return (
+                                                <label key={gi} className="flex items-center gap-1.5 text-[11px] cursor-pointer">
+                                                  <Checkbox
+                                                    checked={done}
+                                                    onCheckedChange={() => toggleWeekGoal(panelSubject.id, i, gi)}
+                                                    className="h-3 w-3 flex-shrink-0"
+                                                  />
+                                                  <span className={done ? 'line-through text-muted-foreground' : 'text-muted-foreground'}>{g}</span>
+                                                </label>
+                                              );
+                                            })
+                                          ) : (
+                                            week.goals.map((g, gi) => (
+                                              <div key={gi} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                                <ListChecks className="h-3 w-3 flex-shrink-0" />
+                                                <span>{g}</span>
+                                              </div>
+                                            ))
+                                          )}
                                         </div>
                                       )}
                                       {week.notes && (

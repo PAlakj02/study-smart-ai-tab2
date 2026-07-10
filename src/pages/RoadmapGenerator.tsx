@@ -88,6 +88,13 @@ const RoadmapGenerator = () => {
   // Which existing subjects to generate a roadmap for — topics come from each
   // subject's own syllabus (added in My Subjects), never typed here.
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<Set<string>>(new Set());
+  // Which of a selected subject's topics to actually include — lets you
+  // generate a roadmap for just 2 (or any subset) of a subject's topics
+  // instead of always being forced to schedule its entire syllabus. Absence
+  // of an entry for a subject means "not customized yet"; toggling a subject
+  // on seeds it with every topic selected so existing behaviour is unchanged
+  // until someone actively unchecks something.
+  const [selectedTopicIdsBySubject, setSelectedTopicIdsBySubject] = useState<Record<string, Set<string>>>({});
   const [weakArea, setWeakArea] = useState('');
   const [generatedRoadmaps, setGeneratedRoadmaps] = useState<StudyRoadmap[]>([]);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -108,12 +115,46 @@ const RoadmapGenerator = () => {
   };
 
   const toggleSubjectSelection = (subjectId: string) => {
+    const turningOn = !selectedSubjectIds.has(subjectId);
     setSelectedSubjectIds(prev => {
       const next = new Set(prev);
       if (next.has(subjectId)) next.delete(subjectId);
       else next.add(subjectId);
       return next;
     });
+    if (turningOn) {
+      // Default to every topic selected — matches the previous "whole
+      // subject" behaviour until the user chooses to narrow it down.
+      setSelectedTopicIdsBySubject(prev => ({
+        ...prev,
+        [subjectId]: new Set(subjectTopics(subjectId).map(t => t.id)),
+      }));
+    }
+  };
+
+  const toggleTopicSelection = (subjectId: string, topicId: string) => {
+    setSelectedTopicIdsBySubject(prev => {
+      const current = new Set(prev[subjectId] ?? subjectTopics(subjectId).map(t => t.id));
+      if (current.has(topicId)) current.delete(topicId);
+      else current.add(topicId);
+      return { ...prev, [subjectId]: current };
+    });
+  };
+
+  const setAllTopicsSelected = (subjectId: string, allSelected: boolean) => {
+    setSelectedTopicIdsBySubject(prev => ({
+      ...prev,
+      [subjectId]: allSelected ? new Set(subjectTopics(subjectId).map(t => t.id)) : new Set(),
+    }));
+  };
+
+  /** The topics that will actually be scheduled for this subject — every
+   *  topic by default, or only the ones still checked once customized. */
+  const selectedTopicsFor = (subjectId: string) => {
+    const all = subjectTopics(subjectId);
+    const chosenIds = selectedTopicIdsBySubject[subjectId];
+    if (!chosenIds) return all;
+    return all.filter(t => chosenIds.has(t.id));
   };
 
   // ── Weak areas ────────────────────────────────────────────────────────────
@@ -173,18 +214,19 @@ const RoadmapGenerator = () => {
       return;
     }
 
-    // The AI only ever schedules topics the user has actually defined — never
-    // generic filler. Subjects with no topics yet are skipped, not padded out.
+    // The AI only ever schedules topics the user has actually selected — never
+    // generic filler. Subjects with zero topics chosen (no topics at all, or
+    // every topic manually unchecked) are skipped, not padded out.
     const selected = subjects.filter(s => selectedSubjectIds.has(s.id));
-    const ready = selected.filter(s => subjectTopics(s.id).length > 0);
-    const skipped = selected.filter(s => subjectTopics(s.id).length === 0);
+    const ready = selected.filter(s => selectedTopicsFor(s.id).length > 0);
+    const skipped = selected.filter(s => selectedTopicsFor(s.id).length === 0);
 
     if (skipped.length > 0) {
       toast.error(
         skipped.length === selected.length
-          ? 'None of the selected subjects have topics yet'
-          : `Skipping ${skipped.map(s => s.name).join(', ')} — no topics yet`,
-        { description: 'Add topics in My Subjects before generating a roadmap for them' },
+          ? 'None of the selected subjects have any topics selected'
+          : `Skipping ${skipped.map(s => s.name).join(', ')} — no topics selected`,
+        { description: 'Add topics in My Subjects, or check at least one topic, before generating' },
       );
     }
     if (ready.length === 0) {
@@ -197,13 +239,14 @@ const RoadmapGenerator = () => {
         description: 'This may take a few moments',
       });
 
-      // One roadmap per subject, scheduling exactly that subject's own topics.
+      // One roadmap per subject, scheduling only the topics the user actually
+      // selected for it — not necessarily its whole syllabus.
       // topicTags carries plain topic names only (shown verbatim in the UI);
       // topicDetails carries the same names plus description + stable topicId,
       // used for AI prompt context and for ID-based progress matching later.
       const results: StudyRoadmap[] = [];
       for (const subject of ready) {
-        const topics = subjectTopics(subject.id);
+        const topics = selectedTopicsFor(subject.id);
         const topicTags = topics.map(t => t.name);
         const topicDetails = topics.map(t => ({ name: t.name, description: t.notes, topicId: t.id }));
         const perSubjectInput: RoadmapInput = {
@@ -360,7 +403,7 @@ const RoadmapGenerator = () => {
                                   </span>
                                 )}
                               </div>
-                              {topics.length === 0 ? (
+                              {topics.length === 0 && (
                                 <button
                                   type="button"
                                   onClick={(e) => { e.preventDefault(); navigate(`/subjects`); }}
@@ -368,21 +411,64 @@ const RoadmapGenerator = () => {
                                 >
                                   Add topics for this subject first →
                                 </button>
-                              ) : selected && (
-                                <div className="mt-2 flex flex-wrap gap-1.5">
-                                  {topics.map(t => (
-                                    <span
-                                      key={t.id}
-                                      className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground"
-                                      title={t.notes || undefined}
-                                    >
-                                      {t.name}
-                                    </span>
-                                  ))}
-                                </div>
                               )}
                             </div>
                           </label>
+
+                          {/* Topic picker — kept OUTSIDE the <label> above so clicking a topic
+                              pill doesn't also toggle the subject checkbox (native label
+                              behaviour would fire that too, not just React's onClick). Lets you
+                              generate a roadmap for just a couple of topics instead of always
+                              scheduling this subject's entire syllabus. */}
+                          {topics.length > 0 && selected && (() => {
+                            const chosen = selectedTopicsFor(subject.id);
+                            const chosenIds = new Set(chosen.map(t => t.id));
+                            return (
+                              <div className="mt-2 pl-7">
+                                <div className="flex items-center justify-between mb-1.5">
+                                  <span className="text-xs text-muted-foreground">
+                                    {chosen.length}/{topics.length} topics selected
+                                  </span>
+                                  <div className="flex gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => setAllTopicsSelected(subject.id, true)}
+                                      className="text-xs text-primary hover:underline"
+                                    >
+                                      Select all
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setAllTopicsSelected(subject.id, false)}
+                                      className="text-xs text-primary hover:underline"
+                                    >
+                                      Clear
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {topics.map(t => {
+                                    const isChosen = chosenIds.has(t.id);
+                                    return (
+                                      <button
+                                        key={t.id}
+                                        type="button"
+                                        onClick={() => toggleTopicSelection(subject.id, t.id)}
+                                        title={t.notes || undefined}
+                                        className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                                          isChosen
+                                            ? 'bg-primary/10 border-primary/30 text-primary'
+                                            : 'bg-muted border-transparent text-muted-foreground line-through'
+                                        }`}
+                                      >
+                                        {t.name}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })}

@@ -95,7 +95,6 @@ export interface WeeklyPlan {
   topics: string[];
   topicIds?: (string | undefined)[];
   goals: string[];
-  goalsCompleted?: boolean[];
   notes?: string;
 }
 
@@ -460,6 +459,11 @@ export interface UserPreferences {
   // A single day's AI-suggested checklist — only ever holds "today's" list
   // (keyed by date so a new day naturally replaces it, not a growing history).
   todayChecklist?: { date: string; items: ChecklistItem[] };
+  // The neurodivergent-support toggle + options last used to generate a
+  // roadmap — recalled to pre-fill the Roadmap Generator next time, so a
+  // preference change only affects future roadmaps, never past/manually
+  // edited sessions.
+  lastRoadmapNDSettings?: { neurodivergentSupport: boolean; neurodivergentOptions: Record<string, boolean> };
   updatedAt: string;
 }
 

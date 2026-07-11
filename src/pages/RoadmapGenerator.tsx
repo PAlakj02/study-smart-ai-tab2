@@ -80,7 +80,7 @@ const DEFAULT_FORM: RoadmapFormData = {
 const RoadmapGenerator = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { saveRoadmap, subjects, updateSubject } = useStudyData();
+  const { saveRoadmap, subjects, updateSubject, lastRoadmapNDSettings, saveLastRoadmapNDSettings } = useStudyData();
   const [isGenerating, setIsGenerating] = useState(false);
 
   const [formData, setFormData] = useState<RoadmapFormData>({ ...DEFAULT_FORM });
@@ -107,6 +107,19 @@ const RoadmapGenerator = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, subjects.length]);
+
+  // Pre-fill neurodivergent settings from whatever was used last time — a
+  // preference change here only affects the NEXT roadmap generated, never
+  // roadmaps/sessions that already exist.
+  useEffect(() => {
+    if (!lastRoadmapNDSettings) return;
+    setFormData(prev => ({
+      ...prev,
+      neurodivergentSupport: lastRoadmapNDSettings.neurodivergentSupport,
+      neurodivergentOptions: { ...DEFAULT_ND_OPTIONS, ...lastRoadmapNDSettings.neurodivergentOptions },
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastRoadmapNDSettings]);
 
   const subjectTopics = (subjectId: string) => {
     const subject = subjects.find(s => s.id === subjectId);
@@ -234,6 +247,12 @@ const RoadmapGenerator = () => {
     }
 
     setIsGenerating(true);
+    // Remember these ND settings for next time — a later preference change
+    // only affects future generations, not roadmaps/sessions already made.
+    saveLastRoadmapNDSettings(
+      formData.neurodivergentSupport,
+      (formData.neurodivergentOptions ?? DEFAULT_ND_OPTIONS) as unknown as Record<string, boolean>,
+    );
     try {
       toast.info('AI is generating your personalised roadmap(s)…', {
         description: 'This may take a few moments',

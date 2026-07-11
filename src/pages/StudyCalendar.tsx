@@ -100,8 +100,22 @@ const StudyCalendar: React.FC = () => {
   // `sessions` is the single source of truth shared with Dashboard/Analytics —
   // StudyDataContext re-syncs it from Firestore after every roadmap create/
   // edit/delete, so it's read here directly with no page-local filtering.
-  const { sessions, subjects, roadmap, loading, completeStudySession, markSessionMissed, markSessionSkipped, rescheduleSession, updateStudySession, currentStreak, bestStreak } = useStudyData();
+  const {
+    sessions, subjects, roadmap, roadmapsBySubjectId, legacyRoadmaps, loading,
+    completeStudySession, markSessionMissed, markSessionSkipped, rescheduleSession, moveMissedSessionToCatchUp,
+    updateStudySession, currentStreak, bestStreak,
+  } = useStudyData();
   const isNDPlan = !!(roadmap as { neurodivergentSupport?: boolean } | null)?.neurodivergentSupport;
+
+  // "Flexible catch-up": true only when the session's OWN roadmap (not just
+  // "any" recent roadmap) has the option on — every week of such a roadmap
+  // reserves its own catch-up day at generation time.
+  const canCatchUp = (session: StudySession) => {
+    if (!session.roadmapId) return false;
+    const rm = Object.values(roadmapsBySubjectId).find(r => r.id === session.roadmapId)
+      ?? legacyRoadmaps.find(r => r.id === session.roadmapId);
+    return !!rm?.neurodivergentOptions?.flexibleCatchUp;
+  };
 
   const today = new Date();
   const todayStr = toDateStr(today);
@@ -757,6 +771,16 @@ const StudyCalendar: React.FC = () => {
                                                         Skip
                                                       </Button>
                                                     </>
+                                                  )}
+                                                  {status === 'missed' && canCatchUp(session) && (
+                                                    <Button
+                                                      size="sm"
+                                                      variant="ghost"
+                                                      className="h-5 px-1.5 text-[10px] text-warning hover:text-warning hover:bg-warning/10"
+                                                      onClick={() => moveMissedSessionToCatchUp(session.id)}
+                                                    >
+                                                      Move to catch-up slot
+                                                    </Button>
                                                   )}
                                                   <Button
                                                     size="sm"

@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useMemo, ReactNode, useEffect } from 'react';
 import { StudyRoadmap, WeekPlan, generateSessionsFromRoadmap } from '@/services/geminiService';
-import { findNextAvailableSlot, SchedulingParams } from '@/services/scheduleUtils';
+import { findNextAvailableSlot, findAvailableSlotInRange, SchedulingParams } from '@/services/scheduleUtils';
 import { calculateCurrentStreak, calculateBestStreak } from '@/services/streakUtils';
 import { useAuth } from './AuthContext';
 import * as firestoreService from '@/services/firestoreService';
@@ -103,6 +103,7 @@ interface StudyDataContextType {
   markSessionMissed: (sessionId: string) => Promise<void>;
   markSessionSkipped: (sessionId: string) => Promise<void>;
   rescheduleSession: (sessionId: string) => Promise<void>;
+  moveMissedSessionToCatchUp: (sessionId: string) => Promise<void>;
   updatePreferences: (preferences: Partial<StudyPreferences>) => Promise<void>;
   saveRoadmap: (roadmap: StudyRoadmap) => Promise<void>;
   updateRoadmapWeek: (
@@ -110,7 +111,6 @@ interface StudyDataContextType {
     weekIndex: number,
     weekUpdates: Partial<Pick<WeekPlan, 'focus' | 'topics' | 'topicIds' | 'goals' | 'notes'>>,
   ) => Promise<void>;
-  toggleWeekGoal: (subjectId: string, weekIndex: number, goalIndex: number) => Promise<void>;
   deleteRoadmap: (subjectId: string) => Promise<void>;
   refreshData: () => Promise<void>;
   myGoals: firestoreService.GoalItem[];
@@ -120,6 +120,8 @@ interface StudyDataContextType {
   todayChecklist: { date: string; items: firestoreService.ChecklistItem[] } | null;
   setTodayChecklistItems: (date: string, items: firestoreService.ChecklistItem[]) => Promise<void>;
   toggleChecklistItem: (id: string) => Promise<void>;
+  lastRoadmapNDSettings: { neurodivergentSupport: boolean; neurodivergentOptions: Record<string, boolean> } | null;
+  saveLastRoadmapNDSettings: (neurodivergentSupport: boolean, neurodivergentOptions: Record<string, boolean>) => Promise<void>;
 }
 
 const StudyDataContext = createContext<StudyDataContextType | undefined>(undefined);
@@ -153,6 +155,7 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
   const [legacyRoadmaps, setLegacyRoadmaps] = useState<StudyRoadmap[]>([]);
   const [myGoals, setMyGoals] = useState<firestoreService.GoalItem[]>([]);
   const [todayChecklist, setTodayChecklist] = useState<{ date: string; items: firestoreService.ChecklistItem[] } | null>(null);
+  const [lastRoadmapNDSettings, setLastRoadmapNDSettings] = useState<{ neurodivergentSupport: boolean; neurodivergentOptions: Record<string, boolean> } | null>(null);
   const [loading, setLoading] = useState(true);
 
   /** Splits the subjectId-keyed map from firestoreService into real-subject vs legacy buckets,
@@ -213,6 +216,7 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         setLegacyRoadmaps([]);
         setMyGoals([]);
         setTodayChecklist(null);
+        setLastRoadmapNDSettings(null);
         setLoading(false);
         return;
       }
@@ -232,6 +236,7 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         setSessions(mapSessions(userSessions));
         setMyGoals(userPrefs?.myGoals ?? []);
         setTodayChecklist(userPrefs?.todayChecklist ?? null);
+        setLastRoadmapNDSettings(userPrefs?.lastRoadmapNDSettings ?? null);
       } catch (error) {
         console.error('Error loading user data:', error);
         toast.error('Failed to load your data');
@@ -651,6 +656,71 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  // The real behaviour behind "Flexible catch-up": moves a missed session
+  // INTO its own roadmap's reserved buffer/catch-up week — not just anywhere
+  // in the next 60 days like the generic reschedule above. Updates the
+  // existing session doc in place (date/time only) rather than creating a
+  // new one and leaving the old as "missed", so no duplicate is ever left
+  // behind for the same piece of work.
+  const moveMissedSessionToCatchUp = async (sessionId: string) => {
+    if (!user) return;
+    const session = sessions.find(s => s.id === sessionId);
+    if (!session) return;
+
+    const rm = session.roadmapId
+      ? Object.values(roadmapsBySubjectId).find(r => r.id === session.roadmapId)
+        ?? legacyRoadmaps.find(r => r.id === session.roadmapId)
+      : undefined;
+    if (!rm?.neurodivergentOptions?.flexibleCatchUp) {
+      toast.error('No catch-up slot available for this session');
+      return;
+    }
+
+    // Same weekIndex bucketing generateSessionsFromRoadmap/buildSuggestedSessions
+    // use — the week the MISSED session originally fell in reserved its own
+    // catch-up day at generation time, so search that week's range first
+    // rather than jumping to some other week.
+    const daysSinceStart = Math.floor(
+      (new Date(session.date.substring(0, 10)).getTime() - new Date(rm.startDate).getTime()) / (24 * 60 * 60 * 1000),
+    );
+    const weekIndex = Math.min(Math.max(0, Math.floor(daysSinceStart / 7)), rm.weeklyPlans.length - 1);
+    const isLastWeek = weekIndex === rm.weeklyPlans.length - 1;
+    const weekStart = addDaysToDateStr(rm.startDate, weekIndex * 7);
+    const naturalWeekEnd = addDaysToDateStr(rm.startDate, weekIndex * 7 + 6);
+    const weekEnd = isLastWeek ? rm.endDate : (naturalWeekEnd > rm.endDate ? rm.endDate : naturalWeekEnd);
+
+    const params: SchedulingParams = {
+      availableStudyDays: rm.availableStudyDays ?? [1, 2, 3, 4, 5, 6],
+      preferredStartTime: rm.preferredStartTime ?? '16:00',
+      preferredEndTime: rm.preferredEndTime ?? '20:00',
+      breakLengthMinutes: rm.breakLengthMinutes ?? 10,
+    };
+    const occupied = sessions
+      .filter(s => s.id !== sessionId && s.startTime && s.endTime && s.status !== 'missed' && s.status !== 'skipped')
+      .map(s => ({ date: s.date.substring(0, 10), startTime: s.startTime!, endTime: s.endTime! }));
+
+    const slot = findAvailableSlotInRange(occupied, params, weekStart, weekEnd, session.duration);
+    if (!slot) {
+      toast.error('No open catch-up slot found this week — try the regular Reschedule instead');
+      return;
+    }
+
+    const previous = { date: session.date, startTime: session.startTime, endTime: session.endTime, status: session.status };
+    setSessions(prev => prev.map(s => s.id === sessionId
+      ? { ...s, date: slot.date, startTime: slot.startTime, endTime: slot.endTime, status: 'scheduled' as SessionStatus }
+      : s));
+    try {
+      await firestoreService.updateStudySession(sessionId, {
+        date: slot.date, startTime: slot.startTime, endTime: slot.endTime, status: 'scheduled',
+      });
+      toast.success('Moved to this week’s catch-up slot', { description: `${slot.date} at ${slot.startTime}` });
+    } catch (error) {
+      console.error('Error moving session to catch-up slot:', error);
+      setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, ...previous } : s));
+      toast.error('Failed to move session');
+    }
+  };
+
   const updatePreferences = async (newPreferences: Partial<StudyPreferences>) => {
     if (!user) return;
     const updatedPreferences = { ...preferences, ...newPreferences };
@@ -733,6 +803,24 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     } catch (error) {
       console.error('Error updating checklist item:', error);
       toast.error('Failed to update checklist');
+    }
+  };
+
+  // Remembers the neurodivergent-support toggle/options used for the most
+  // recent roadmap generation, so the Roadmap Generator can pre-fill them
+  // next time instead of always resetting to defaults. Only affects future
+  // generations — never touches already-generated or manually edited sessions.
+  const saveLastRoadmapNDSettings = async (
+    neurodivergentSupport: boolean,
+    neurodivergentOptions: Record<string, boolean>,
+  ) => {
+    if (!user) return;
+    const value = { neurodivergentSupport, neurodivergentOptions };
+    setLastRoadmapNDSettings(value);
+    try {
+      await firestoreService.saveUserPreferences(user.id, { lastRoadmapNDSettings: value });
+    } catch (error) {
+      console.error('Error saving neurodivergent preferences:', error);
     }
   };
 
@@ -834,37 +922,6 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  // Ticks/unticks one goal within a week — the real behaviour behind the
-  // "Visual checklist" neurodivergent option, which otherwise would just be
-  // a tip sentence with nothing to actually tick. `goalsCompleted` is created
-  // lazily (all-false, index-aligned with `goals`) the first time a goal in
-  // that week is toggled, so older roadmaps without the field still work.
-  const toggleWeekGoal = async (subjectId: string, weekIndex: number, goalIndex: number) => {
-    if (!user) return;
-    const existing = roadmapsBySubjectId[subjectId];
-    const week = existing?.weeklyPlans[weekIndex];
-    if (!existing || !week || !week.goals[goalIndex]) return;
-
-    const baseCompleted = week.goalsCompleted ?? week.goals.map(() => false);
-    const updatedCompleted = baseCompleted.map((c, i) => (i === goalIndex ? !c : c));
-    const updatedWeeklyPlans = existing.weeklyPlans.map((w, i) =>
-      i === weekIndex ? { ...w, goalsCompleted: updatedCompleted } : w,
-    );
-    const updatedRoadmap = { ...existing, weeklyPlans: updatedWeeklyPlans };
-
-    setRoadmapsBySubjectId(prev => ({ ...prev, [subjectId]: updatedRoadmap }));
-    if (roadmap?.id === existing.id) setRoadmap(updatedRoadmap);
-
-    try {
-      await firestoreService.updateRoadmap(existing.id, { weeklyPlans: updatedWeeklyPlans } as any);
-    } catch (error) {
-      console.error('Error toggling week goal:', error);
-      toast.error('Failed to save checklist — reverting');
-      setRoadmapsBySubjectId(prev => ({ ...prev, [subjectId]: existing }));
-      if (roadmap?.id === existing.id) setRoadmap(existing);
-    }
-  };
-
   // Deletes only the roadmap doc + its generated sessions for one subject.
   // The subject, its chapters/topics, and any other subjects' data are left
   // untouched, so a fresh roadmap can be generated for the same subject right
@@ -946,10 +1003,10 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         markSessionMissed,
         markSessionSkipped,
         rescheduleSession,
+        moveMissedSessionToCatchUp,
         updatePreferences,
         saveRoadmap,
         updateRoadmapWeek,
-        toggleWeekGoal,
         deleteRoadmap,
         refreshData,
         myGoals,
@@ -959,6 +1016,8 @@ export const StudyDataProvider = ({ children }: { children: ReactNode }) => {
         todayChecklist,
         setTodayChecklistItems,
         toggleChecklistItem,
+        lastRoadmapNDSettings,
+        saveLastRoadmapNDSettings,
       }}
     >
       {children}

@@ -85,11 +85,6 @@ export interface WeekPlan {
   // first and only fall back to matching `topics[i]` by name when undefined.
   topicIds?: (string | undefined)[];
   goals: string[];
-  // Same index-correspondence as `goals` — only present once a goal has been
-  // toggled at least once (see StudyDataContext.toggleWeekGoal). Rendered as
-  // a real tick-box list instead of a plain bullet list when the roadmap's
-  // neurodivergentOptions.visualChecklist is on.
-  goalsCompleted?: boolean[];
   notes?: string; // user-editable personal notes for the week
   studyHours: number;
 }
@@ -257,6 +252,28 @@ const buildSuggestedSessions = (
     current.setDate(current.getDate() + 1);
   }
 
+  // "Flexible catch-up": reserve the LAST available-study-day of every week
+  // (that has more than one) as an open catch-up slot — no regular session is
+  // generated there, so a missed session earlier that week can genuinely be
+  // moved into it later (see StudyDataContext.moveMissedSessionToCatchUp)
+  // without ever double-booking or inventing a new day.
+  const reservedCatchUpDates = new Set<string>();
+  if (neurodivergentSupport && neurodivergentOptions?.flexibleCatchUp) {
+    const daysByWeek = new Map<number, Date[]>();
+    for (const d = new Date(current); d <= scheduleEnd; d.setDate(d.getDate() + 1)) {
+      if (!availableStudyDays.includes(d.getDay())) continue;
+      const daysSinceStart = Math.floor((d.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000));
+      const weekIndex = Math.min(Math.floor(daysSinceStart / 7), weeklyPlans.length - 1);
+      if (!daysByWeek.has(weekIndex)) daysByWeek.set(weekIndex, []);
+      daysByWeek.get(weekIndex)!.push(new Date(d));
+    }
+    for (const days of daysByWeek.values()) {
+      if (days.length > 1) {
+        reservedCatchUpDates.add(days[days.length - 1].toISOString().split('T')[0]);
+      }
+    }
+  }
+
   // Paced week-by-week so sessions span the FULL date range instead of
   // packing all topics densely into the first few days and then stopping —
   // each day's session(s) draw from that calendar week's own topic bucket,
@@ -265,7 +282,7 @@ const buildSuggestedSessions = (
   // endDate itself — the study window runs through the end date, not up to
   // the day before it.
   while (current <= scheduleEnd) {
-    if (availableStudyDays.includes(current.getDay())) {
+    if (availableStudyDays.includes(current.getDay()) && !reservedCatchUpDates.has(current.toISOString().split('T')[0])) {
       const daysSinceStart = Math.floor((current.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000));
       const weekIndex = Math.min(Math.floor(daysSinceStart / 7), weeklyPlans.length - 1);
       const weekTopics = weeklyPlans[weekIndex]?.topics ?? [];
@@ -352,12 +369,7 @@ export const generateStudyRoadmap = async (input: RoadmapInput): Promise<StudyRo
   const endDate = new Date(input.endDate);
   const daysInRange = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
   const calendarWeeks = Math.max(1, Math.min(Math.ceil(daysInRange / 7), 26));
-  // "Flexible catch-up" (an ND option) guarantees a buffer week exists even if
-  // the user didn't separately check "Include buffer days" — otherwise the ND
-  // option would just be a tip sentence with no real scheduling effect.
-  const effectiveIncludeBufferDays =
-    input.includeBufferDays || !!(input.neurodivergentSupport && input.neurodivergentOptions?.flexibleCatchUp);
-  const contentWeeks = effectiveIncludeBufferDays ? Math.max(1, calendarWeeks - 1) : calendarWeeks;
+  const contentWeeks = input.includeBufferDays ? Math.max(1, calendarWeeks - 1) : calendarWeeks;
   const topicBuckets = scheduleTopicsAcrossWeeks(buildTopicRefs(input), contentWeeks);
   const totalWeeks = calendarWeeks;
   const subject = input.subjects[0] ?? 'Study';
@@ -489,7 +501,7 @@ ${ndBlock}
     // Buffer week: reserves the last week of the selected range for pure
     // catch-up/consolidation — no new or repeated topics, so it never
     // conflicts with "only ever the user's real topics."
-    if (effectiveIncludeBufferDays && calendarWeeks > contentWeeks) {
+    if (input.includeBufferDays && calendarWeeks > contentWeeks) {
       weeklyPlans.push({
         week: calendarWeeks,
         focus: 'Buffer & Consolidation Week',
@@ -545,10 +557,7 @@ const generateDemoRoadmap = (input: RoadmapInput): StudyRoadmap => {
   const endDate = new Date(input.endDate);
   const daysInRange = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
   const calendarWeeks = Math.max(1, Math.min(Math.ceil(daysInRange / 7), 26));
-  // See generateStudyRoadmap for why "flexible catch-up" forces a buffer week.
-  const effectiveIncludeBufferDays =
-    input.includeBufferDays || !!(input.neurodivergentSupport && input.neurodivergentOptions?.flexibleCatchUp);
-  const contentWeeks = effectiveIncludeBufferDays ? Math.max(1, calendarWeeks - 1) : calendarWeeks;
+  const contentWeeks = input.includeBufferDays ? Math.max(1, calendarWeeks - 1) : calendarWeeks;
   const weeklyHours = (input.availableStudyDays?.length ?? 6) * input.studyHoursPerDay;
   const subject = input.subjects[0] ?? 'Study';
 
@@ -572,7 +581,7 @@ const generateDemoRoadmap = (input: RoadmapInput): StudyRoadmap => {
 
   // Explicit buffer week appended when requested — pure catch-up/consolidation,
   // no new or repeated topics, so it never conflicts with "only real topics."
-  if (effectiveIncludeBufferDays && calendarWeeks > contentWeeks) {
+  if (input.includeBufferDays && calendarWeeks > contentWeeks) {
     weeklyPlans.push({
       week: calendarWeeks,
       focus: 'Buffer & Consolidation Week',

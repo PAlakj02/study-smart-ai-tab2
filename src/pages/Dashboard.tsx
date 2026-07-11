@@ -56,6 +56,27 @@ import {
   Trash2,
 } from "lucide-react";
 
+// Focus tips shown before a study block when "Low distraction" is on — a
+// small rotating pool so the same two tips don't repeat for every session.
+const LOW_DISTRACTION_TIPS = [
+  'Silence notifications before you start.',
+  'Keep only the materials you need on your desk.',
+  'Use full-screen mode to avoid tab-switching.',
+  'Keep water nearby so you don’t need to get up.',
+  'Put your phone in another room.',
+  'Close any tabs unrelated to this session.',
+];
+
+/** Deterministic-per-seed pick of 2 tips — same seed (e.g. a session group's
+ *  key) always shows the same pair, but different groups/days rotate through
+ *  the pool instead of always showing tips[0] and tips[1]. */
+const focusTipsFor = (seed: string, count = 2): string[] => {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  const start = hash % LOW_DISTRACTION_TIPS.length;
+  return Array.from({ length: count }, (_, i) => LOW_DISTRACTION_TIPS[(start + i) % LOW_DISTRACTION_TIPS.length]);
+};
+
 // "16:00" → "4:00 PM"
 const fmt12h = (t: string): string => {
   const [h, m] = t.split(':').map(Number);
@@ -80,10 +101,10 @@ const Dashboard = () => {
   const { user, logout } = useAuth();
   const {
     subjects, sessions, totalStudyHours, roadmap, roadmapsBySubjectId, loading,
-    completeStudySession, markSessionMissed, rescheduleSession, currentStreak, bestStreak,
+    completeStudySession, markSessionMissed, rescheduleSession, moveMissedSessionToCatchUp, currentStreak, bestStreak,
     myGoals, addGoal, toggleGoal, removeGoal,
     todayChecklist: persistedChecklist, setTodayChecklistItems, toggleChecklistItem,
-    updateRoadmapWeek, toggleWeekGoal, deleteRoadmap,
+    updateRoadmapWeek, deleteRoadmap,
   } = useStudyData();
   const [searchParams] = useSearchParams();
   const focusSubjectId = searchParams.get('subjectId');
@@ -712,30 +733,12 @@ const Dashboard = () => {
                                       </div>
                                       {week.goals.length > 0 && (
                                         <div className="mt-1.5 pt-1.5 border-t border-border/50 space-y-0.5">
-                                          {panelRoadmap.neurodivergentOptions?.visualChecklist ? (
-                                            // Real tick-box goals — the actual behaviour behind the
-                                            // "Visual checklist" ND option, not just a tip sentence.
-                                            week.goals.map((g, gi) => {
-                                              const done = week.goalsCompleted?.[gi] ?? false;
-                                              return (
-                                                <label key={gi} className="flex items-center gap-1.5 text-[11px] cursor-pointer">
-                                                  <Checkbox
-                                                    checked={done}
-                                                    onCheckedChange={() => toggleWeekGoal(panelSubject.id, i, gi)}
-                                                    className="h-3 w-3 flex-shrink-0"
-                                                  />
-                                                  <span className={done ? 'line-through text-muted-foreground' : 'text-muted-foreground'}>{g}</span>
-                                                </label>
-                                              );
-                                            })
-                                          ) : (
-                                            week.goals.map((g, gi) => (
-                                              <div key={gi} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                                                <ListChecks className="h-3 w-3 flex-shrink-0" />
-                                                <span>{g}</span>
-                                              </div>
-                                            ))
-                                          )}
+                                          {week.goals.map((g, gi) => (
+                                            <div key={gi} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                              <ListChecks className="h-3 w-3 flex-shrink-0" />
+                                              <span>{g}</span>
+                                            </div>
+                                          ))}
                                         </div>
                                       )}
                                       {week.notes && (
@@ -815,7 +818,22 @@ const Dashboard = () => {
                       {todayFocusGroups.map((group, index) => {
                         const groupCompleted = group.groupSessions.filter(s => s.completed).length;
                         const allDone = groupCompleted === group.groupSessions.length;
-                        const isExpanded = !!expandedFocusGroups[group.key];
+                        // "Visual checklist" ND option: converts today's plan into a real
+                        // checklist by always showing each session's checkbox for this
+                        // subject, generated straight from the existing sessions — no
+                        // separate checklist data of its own. Reuses the SAME per-session
+                        // Checkbox + completeStudySession already wired to Calendar/Analytics.
+                        const checklistOn = !!roadmapsBySubjectId[group.subjectId]?.neurodivergentOptions?.visualChecklist;
+                        const isExpanded = checklistOn || !!expandedFocusGroups[group.key];
+                        // "Low distraction" ND option: a couple of concise focus tips shown
+                        // before this study block, rotating per group so they're not always
+                        // the same two lines.
+                        const lowDistractionOn = !!roadmapsBySubjectId[group.subjectId]?.neurodivergentOptions?.lowDistractionMode;
+                        const focusTips = lowDistractionOn ? focusTipsFor(group.key) : [];
+                        // "Flexible catch-up" ND option: missed sessions for this subject can
+                        // be moved into that week's own reserved catch-up slot instead of
+                        // just anywhere in the next 60 days.
+                        const canCatchUp = !!roadmapsBySubjectId[group.subjectId]?.neurodivergentOptions?.flexibleCatchUp;
                         return (
                           <motion.div
                             key={group.key}
@@ -848,6 +866,14 @@ const Dashboard = () => {
                                   </div>
                                 </div>
 
+                                {focusTips.length > 0 && (
+                                  <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                                    {focusTips.map((tip, ti) => (
+                                      <span key={ti} className="flex items-center gap-1">🔕 {tip}</span>
+                                    ))}
+                                  </div>
+                                )}
+
                                 {/* Bulk complete + expand toggle */}
                                 <div className="flex items-center gap-3 mt-3">
                                   <div className="flex items-center gap-2">
@@ -870,7 +896,7 @@ const Dashboard = () => {
                                       {allDone ? 'Completed ✓' : 'Mark all complete'}
                                     </label>
                                   </div>
-                                  {group.groupSessions.length > 1 && (
+                                  {group.groupSessions.length > 1 && !checklistOn && (
                                     <button
                                       className="text-xs text-primary hover:underline flex items-center gap-0.5"
                                       onClick={() => setExpandedFocusGroups(prev => ({ ...prev, [group.key]: !isExpanded }))}
@@ -902,13 +928,28 @@ const Dashboard = () => {
                                         </div>
                                         {!session.completed && (
                                           <div className="flex items-center gap-1 flex-shrink-0">
-                                            <button
-                                              className="text-xs text-destructive hover:underline px-0"
-                                              onClick={() => markSessionMissed(session.id)}
-                                            >
-                                              Missed
-                                            </button>
-                                            <span className="text-muted-foreground text-xs">·</span>
+                                            {session.status !== 'missed' && (
+                                              <>
+                                                <button
+                                                  className="text-xs text-destructive hover:underline px-0"
+                                                  onClick={() => markSessionMissed(session.id)}
+                                                >
+                                                  Missed
+                                                </button>
+                                                <span className="text-muted-foreground text-xs">·</span>
+                                              </>
+                                            )}
+                                            {session.status === 'missed' && canCatchUp && (
+                                              <>
+                                                <button
+                                                  className="text-xs text-warning hover:underline px-0"
+                                                  onClick={() => moveMissedSessionToCatchUp(session.id)}
+                                                >
+                                                  Move to catch-up slot
+                                                </button>
+                                                <span className="text-muted-foreground text-xs">·</span>
+                                              </>
+                                            )}
                                             <button
                                               className="text-xs text-primary hover:underline px-0"
                                               onClick={() => rescheduleSession(session.id)}

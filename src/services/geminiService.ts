@@ -181,6 +181,29 @@ const describeTopicList = (names: string[]): string => {
   return `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`;
 };
 
+/**
+ * Always-specific, brief week framing built from the ACTUAL topics in a
+ * bucket — never trusts AI-supplied focus/goals text, which can come back
+ * as generic filler ("revise notes", "practice problems") regardless of
+ * what's actually being studied that week. Topics/topicIds were already
+ * force-overwritten from our own scheduling; this closes the same gap for
+ * the two remaining freeform fields so every week reads the same way
+ * whether the Grok API or the offline demo path produced it.
+ */
+const describeWeek = (subject: string, topicNames: string[], isReview: boolean): { focus: string; goals: string[] } => {
+  const topicList = describeTopicList(topicNames);
+  if (isReview) {
+    return {
+      focus: `${subject} — Review: ${topicList}`,
+      goals: [`Revisit ${topicList} with harder practice problems`, 'Self-test without notes to confirm retention'],
+    };
+  }
+  return {
+    focus: `${subject} — ${topicList}`,
+    goals: [`Learn and take notes on ${topicList}`, 'Solve practice questions for each topic above'],
+  };
+};
+
 const buildTips = (input: RoadmapInput): string[] => {
   const nd = input.neurodivergentSupport ? input.neurodivergentOptions : null;
   return [
@@ -437,20 +460,17 @@ ${ndBlock}
 **CRITICAL INSTRUCTIONS:**
 1. Produce exactly ${topicBuckets.length} week entries, one per week listed above, in order.
 2. Each week's "topics" array MUST be exactly the topic list given for that week above, verbatim, same order, nothing added or removed.
-3. Write a short "focus" theme and 2-3 actionable "goals" for each week that reference only its own topics — for SPACED REVIEW weeks, write practice/retention-oriented goals instead of first-time-learning goals.
-4. Set studyHours per week to exactly ${weeklyHours}.
+3. Set studyHours per week to exactly ${weeklyHours}.
+4. Only "title" and "tips" below are actually used from your response — this app writes each week's own focus/goals text itself, so don't spend effort on those; keep tips short, concrete, and specific to this subject/schedule rather than generic study advice.
 
 **RETURN ONLY VALID JSON — no markdown, no comments:**
 {
   "title": "Study Roadmap: ${subject}",
-  "description": "${totalWeeks}-week plan through ${input.endDate}, ${weeklyHours} h/week on ${dayLabels}",
   "totalWeeks": ${topicBuckets.length},
   "weeklyPlans": [
     {
       "week": 1,
-      "focus": "${subject} — ${topicBuckets[0].topics[0].name}",
       "topics": ${JSON.stringify(topicBuckets[0].topics.map(t => t.name))},
-      "goals": ["Cover all of this week's topics", "Solve targeted exercises for each"],
       "studyHours": ${weeklyHours}
     }
   ],
@@ -485,15 +505,19 @@ ${ndBlock}
     // Enforcement: the AI may only theme/phrase around the topics we assigned —
     // topics per week are always overwritten with our own buckets, never trusted
     // from the AI's output, so nothing invented or dropped can slip through.
+    // focus/goals are also always our own (see describeWeek) rather than the
+    // AI's freeform text, which tended to come back as generic filler
+    // ("revise notes") instead of naming what's actually being studied.
     const weeklyPlans: WeekPlan[] = topicBuckets.map((bucket, i) => {
-      const aiWeek = roadmapData?.weeklyPlans?.[i];
       const topicNames = bucket.topics.map(t => t.name);
+      const { focus, goals } = describeWeek(subject, topicNames, bucket.isReview);
+      const aiWeek = roadmapData?.weeklyPlans?.[i];
       return {
         week: i + 1,
-        focus: aiWeek?.focus || `${subject} — ${bucket.isReview ? 'Review: ' : ''}${topicNames[0]}`,
+        focus,
         topics: topicNames,
         topicIds: bucket.topics.map(t => t.topicId),
-        goals: Array.isArray(aiWeek?.goals) && aiWeek.goals.length ? aiWeek.goals : [`Cover: ${topicNames.join(', ')}`],
+        goals,
         studyHours: typeof aiWeek?.studyHours === 'number' ? aiWeek.studyHours : weeklyHours,
       };
     });
@@ -564,17 +588,14 @@ const generateDemoRoadmap = (input: RoadmapInput): StudyRoadmap => {
   const topicBuckets = scheduleTopicsAcrossWeeks(buildTopicRefs(input), contentWeeks);
 
   const weeklyPlans: WeekPlan[] = topicBuckets.map((bucket, idx) => {
-    const week = idx + 1;
     const topicNames = bucket.topics.map(t => t.name);
-    const label = bucket.isReview ? 'Review & practice' : topicNames[0];
+    const { focus, goals } = describeWeek(subject, topicNames, bucket.isReview);
     return {
-      week,
-      focus: `${subject} — ${label}${topicNames.length > 1 ? ` +${topicNames.length - 1} more` : ''}`,
+      week: idx + 1,
+      focus,
       topics: topicNames,
       topicIds: bucket.topics.map(t => t.topicId),
-      goals: bucket.isReview
-        ? [`Revisit and practice: ${topicNames.join(', ')}`, 'Solve harder problems to test retention']
-        : [`Cover all of this week's topics: ${topicNames.join(', ')}`, 'Solve targeted exercises for each'],
+      goals,
       studyHours: weeklyHours,
     };
   });
